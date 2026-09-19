@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import '../config/api_config.dart';
 import '../controllers/theme_controller.dart';
+import '../services/app_update_service.dart';
 import '../widgets/semicircle_gauge_painter.dart';
 import '../widgets/profile_avatar_badge.dart';
 
@@ -58,6 +59,9 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
     _fetchTeamApprovalsCount();
     _timeTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _now = DateTime.now());
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      AppUpdateService.checkForUpdates(context);
     });
   }
 
@@ -121,18 +125,38 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
     try {
       final data = await apiGet('/api/attendance/me', token: widget.token);
       if (data.isNotEmpty) {
-        final latest = data[0];
-        if (latest['clock_out'] == null && latest['clock_in'] != null) {
-          setState(() {
-            _clockedIn   = true;
-            _clockInTime = DateTime.parse(latest['clock_in']);
-            _sessionId   = latest['_id']?.toString();
-          });
-          _startLocationLoop();
-        } else if (latest['clock_in'] != null) {
-          setState(() {
-            _clockInTime = DateTime.parse(latest['clock_in']);
-          });
+        // Look for an open active shift (sign_out / clock_out is null)
+        final active = data.firstWhere(
+          (r) => r['clock_out'] == null && r['clock_in'] != null,
+          orElse: () => null,
+        );
+        if (active != null) {
+          final ci = DateTime.tryParse(active['clock_in']?.toString() ?? '');
+          if (mounted) {
+            setState(() {
+              _clockedIn   = true;
+              _clockInTime = ci ?? DateTime.now();
+              _sessionId   = active['_id']?.toString();
+            });
+            _startLocationLoop();
+          }
+        } else {
+          // If no active shift is open, check today's latest record to display check-in time
+          final now = DateTime.now();
+          final todayRecord = data.firstWhere(
+            (r) {
+              if (r['clock_in'] == null) return false;
+              final ci = DateTime.tryParse(r['clock_in'].toString());
+              return ci != null && ci.year == now.year && ci.month == now.month && ci.day == now.day;
+            },
+            orElse: () => null,
+          );
+          if (mounted) {
+            setState(() {
+              _clockedIn = false;
+              _clockInTime = todayRecord != null ? DateTime.tryParse(todayRecord['clock_in']?.toString() ?? '') : null;
+            });
+          }
         }
       }
     } catch (_) {}
@@ -202,9 +226,11 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
     }
 
     try {
+      final clientNow = DateTime.now();
       final res = await apiPost('/api/attendance/clock-in', {
         'lat': pos.latitude,
         'lng': pos.longitude,
+        'client_time': clientNow.toIso8601String(),
       }, token: widget.token);
 
       if (res['error'] != null) {
@@ -223,7 +249,7 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
         }
         setState(() {
           _clockedIn    = true;
-          _clockInTime  = DateTime.now();
+          _clockInTime  = clientNow;
           _sessionId    = res['session_id']?.toString();
           _message      = msg;
         });
@@ -245,6 +271,7 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
       final res = await apiPost('/api/attendance/clock-out', {
         'lat': pos?.latitude,
         'lng': pos?.longitude,
+        'client_time': DateTime.now().toIso8601String(),
       }, token: widget.token);
 
       if (res['error'] != null) {

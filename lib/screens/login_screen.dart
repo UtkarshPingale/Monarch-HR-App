@@ -21,7 +21,18 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _err;
 
   @override
+  void initState() {
+    super.initState();
+    themeController.addListener(_onThemeChanged);
+  }
+
+  void _onThemeChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   void dispose() {
+    themeController.removeListener(_onThemeChanged);
     _email.dispose();
     _password.dispose();
     super.dispose();
@@ -60,11 +71,15 @@ class _LoginScreenState extends State<LoginScreen> {
     final isDark = themeController.isDarkMode;
     final bgScaffold = isDark ? const Color(0xFF0C0E14) : const Color(0xFFF8F9FF);
     final bgCard = isDark ? const Color(0xFF131722) : Colors.white;
-    final bgInput = isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF0F4FD);
+    final bgInput = isDark ? const Color(0xFF1A1F2C) : const Color(0xFFF0F4FD);
+    final cardBorder = isDark ? const Color(0xFF1F2637) : const Color(0xFFEAEFF8);
+    final inputBorder = isDark ? const Color(0xFF283044) : const Color(0xFFE2E8F0);
     final textPrimary = isDark ? Colors.white : const Color(0xFF171C23);
-    final textSecondary = isDark ? const Color(0xFF9CA3AF) : const Color(0xFF524437);
+    final textSecondary = isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B);
+    final textHint = isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8);
+    final iconColor = isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B);
     const amberPrimary = Color(0xFFF5A952);
-    const amberDark = Color(0xFF895100);
+    final forgotPasswordColor = isDark ? const Color(0xFFFDBA74) : const Color(0xFFB45309);
 
     return Scaffold(
       backgroundColor: bgScaffold,
@@ -86,7 +101,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     color: amberPrimary.withAlpha(38),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.schedule_rounded, color: amberDark, size: 20),
+                  child: const Icon(Icons.schedule_rounded, color: amberPrimary, size: 20),
                 ),
               ),
             ),
@@ -103,22 +118,29 @@ class _LoginScreenState extends State<LoginScreen> {
             children: [
               Text('Sign In', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: textSecondary)),
               const SizedBox(width: 6),
-              const CircleAvatar(
+              CircleAvatar(
                 radius: 14,
-                backgroundColor: amberDark,
-                child: Icon(Icons.person, color: Colors.white, size: 16),
+                backgroundColor: isDark ? const Color(0xFF2A241A) : const Color(0xFFFDF0DE),
+                child: const Icon(Icons.person, color: amberPrimary, size: 16),
               ),
             ],
           ),
-          IconButton(
-            icon: Icon(
-              isDark ? Icons.wb_sunny_outlined : Icons.nightlight_round,
-              color: isDark ? amberPrimary : const Color(0xFF2563EB),
-              size: 18,
+          const SizedBox(width: 6),
+          Container(
+            margin: const EdgeInsets.only(right: 12),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E2536) : const Color(0xFFEBF1FF),
+              shape: BoxShape.circle,
             ),
-            onPressed: () => themeController.toggleTheme(),
+            child: IconButton(
+              icon: Icon(
+                isDark ? Icons.wb_sunny_rounded : Icons.dark_mode_rounded,
+                color: isDark ? const Color(0xFFFBBF24) : const Color(0xFF3B82F6),
+                size: 18,
+              ),
+              onPressed: () => themeController.toggleTheme(),
+            ),
           ),
-          const SizedBox(width: 8),
         ],
       ),
       body: SafeArea(
@@ -140,11 +162,12 @@ class _LoginScreenState extends State<LoginScreen> {
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         color: bgCard,
-                        boxShadow: const [
+                        border: Border.all(color: cardBorder, width: 1.5),
+                        boxShadow: [
                           BoxShadow(
-                            color: Color(0x0F171C23),
+                            color: isDark ? const Color(0x66000000) : const Color(0x0F171C23),
                             blurRadius: 16,
-                            offset: Offset(0, 4),
+                            offset: const Offset(0, 4),
                           )
                         ],
                       ),
@@ -206,15 +229,15 @@ class _LoginScreenState extends State<LoginScreen> {
                 decoration: BoxDecoration(
                   color: bgCard,
                   borderRadius: BorderRadius.circular(28),
-                  boxShadow: const [
+                  boxShadow: [
                     BoxShadow(
-                      color: Color(0x0F171C23),
+                      color: isDark ? const Color(0x66000000) : const Color(0x0F171C23),
                       blurRadius: 20,
-                      offset: Offset(0, 6),
+                      offset: const Offset(0, 6),
                     )
                   ],
                   border: Border.all(
-                    color: isDark ? const Color(0xFF1F2633) : const Color(0xFFEAEFF8),
+                    color: cardBorder,
                   ),
                 ),
                 child: Column(
@@ -229,14 +252,15 @@ class _LoginScreenState extends State<LoginScreen> {
                       decoration: BoxDecoration(
                         color: bgInput,
                         borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: inputBorder, width: 1),
                       ),
                       child: TextField(
                         controller: _email,
                         style: TextStyle(color: textPrimary, fontWeight: FontWeight.w600, fontSize: 14),
                         decoration: InputDecoration(
-                          prefixIcon: Icon(Icons.badge_outlined, color: isDark ? const Color(0xFF9CA3AF) : const Color(0xFF847465), size: 20),
+                          prefixIcon: Icon(Icons.badge_outlined, color: iconColor, size: 20),
                           hintText: 'e.g. EMP-84920',
-                          hintStyle: const TextStyle(color: Color(0xFF847465), fontSize: 13, fontWeight: FontWeight.w400),
+                          hintStyle: TextStyle(color: textHint, fontSize: 13, fontWeight: FontWeight.w400),
                           border: InputBorder.none,
                           contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                         ),
@@ -254,23 +278,24 @@ class _LoginScreenState extends State<LoginScreen> {
                       decoration: BoxDecoration(
                         color: bgInput,
                         borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: inputBorder, width: 1),
                       ),
                       child: TextField(
                         controller: _password,
                         obscureText: _obscurePassword,
                         style: TextStyle(color: textPrimary, fontWeight: FontWeight.w600, fontSize: 14),
                         decoration: InputDecoration(
-                          prefixIcon: Icon(Icons.lock_outline, color: isDark ? const Color(0xFF9CA3AF) : const Color(0xFF847465), size: 20),
+                          prefixIcon: Icon(Icons.lock_outline, color: iconColor, size: 20),
                           suffixIcon: IconButton(
                             icon: Icon(
                               _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                              color: const Color(0xFF847465),
+                              color: iconColor,
                               size: 20,
                             ),
                             onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                           ),
                           hintText: 'Enter your work password',
-                          hintStyle: const TextStyle(color: Color(0xFF847465), fontSize: 13, fontWeight: FontWeight.w400),
+                          hintStyle: TextStyle(color: textHint, fontSize: 13, fontWeight: FontWeight.w400),
                           border: InputBorder.none,
                           contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                         ),
@@ -291,7 +316,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               child: Checkbox(
                                 value: _rememberDevice,
                                 activeColor: amberPrimary,
-                                checkColor: amberDark,
+                                checkColor: const Color(0xFF451A03),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                                 onChanged: (val) => setState(() => _rememberDevice = val ?? true),
                               ),
@@ -301,9 +326,9 @@ class _LoginScreenState extends State<LoginScreen> {
                                 style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500)),
                           ],
                         ),
-                        const Text('Forgot password?',
+                        Text('Forgot password?',
                             style: TextStyle(
-                                fontSize: 11, color: amberDark, fontWeight: FontWeight.w700)),
+                                fontSize: 11, color: forgotPasswordColor, fontWeight: FontWeight.w700)),
                       ],
                     ),
 
@@ -316,18 +341,18 @@ class _LoginScreenState extends State<LoginScreen> {
                         onPressed: _loading ? null : _submit,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: amberPrimary,
-                          foregroundColor: const Color(0xFF6B3F00),
+                          foregroundColor: const Color(0xFF451A03),
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(30)),
                           elevation: 0,
-                          shadowColor: amberPrimary.withAlpha(80),
+                          shadowColor: const Color(0x4DF5A952),
                         ),
                         child: _loading
                             ? const SizedBox(
                                 height: 20, width: 20,
                                 child: CircularProgressIndicator(
-                                    strokeWidth: 2.5, color: Color(0xFF6B3F00)))
+                                    strokeWidth: 2.5, color: Color(0xFF451A03)))
                             : const Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
@@ -345,16 +370,23 @@ class _LoginScreenState extends State<LoginScreen> {
                       Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFBA1A1A).withAlpha(25),
+                          color: isDark ? const Color(0x99450A0A) : const Color(0xFFFEE2E2),
                           borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isDark ? const Color(0xFF991B1B) : const Color(0xFFFCA5A5),
+                          ),
                         ),
                         child: Row(
                           children: [
-                            const Icon(Icons.error_outline, color: Color(0xFFBA1A1A), size: 18),
+                            Icon(Icons.error_outline,
+                                color: isDark ? const Color(0xFFFCA5A5) : const Color(0xFFDC2626), size: 18),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(_err!,
-                                  style: const TextStyle(color: Color(0xFFBA1A1A), fontSize: 12, fontWeight: FontWeight.w600)),
+                                  style: TextStyle(
+                                      color: isDark ? const Color(0xFFFCA5A5) : const Color(0xFF991B1B),
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600)),
                             ),
                           ],
                         ),

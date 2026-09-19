@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../config/api_config.dart';
 import '../controllers/theme_controller.dart';
+import '../services/app_update_service.dart';
 import '../widgets/profile_avatar_badge.dart';
 
 // ── Tab 4: MonarchHR Employee Profile & Verification Screen ───────────────────
@@ -976,9 +977,23 @@ class _EngageTabState extends State<EngageTab> {
           const SizedBox(height: 10),
 
           Center(
-            child: Text(
-              'Monarch HR Employee App v2.4.1 (Build 820)',
-              style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () => AppUpdateService.checkForUpdates(context, silent: false),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.system_update_alt_rounded, size: 14, color: textSecondary),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Monarch HR v${AppUpdateService.currentVersionName} (Build ${AppUpdateService.currentVersionCode}) • Check for Updates',
+                      style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
           const SizedBox(height: 20),
