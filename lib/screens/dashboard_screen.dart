@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import '../config/api_config.dart';
 import '../controllers/theme_controller.dart';
 import '../services/app_update_service.dart';
+import '../services/date_time_helper.dart';
 import '../widgets/semicircle_gauge_painter.dart';
 import '../widgets/profile_avatar_badge.dart';
 
@@ -17,6 +18,8 @@ class HomeScreenTab extends StatefulWidget {
   final void Function({String? subTab}) onNavigateToAttendance;
   final VoidCallback? onNavigateToProfile;
 
+  final VoidCallback? onNavigateToLeave;
+
   const HomeScreenTab({
     super.key,
     required this.token,
@@ -25,13 +28,14 @@ class HomeScreenTab extends StatefulWidget {
     required this.onLogout,
     required this.onNavigateToAttendance,
     this.onNavigateToProfile,
+    this.onNavigateToLeave,
   });
 
   @override
-  State<HomeScreenTab> createState() => _HomeScreenTabState();
+  State<HomeScreenTab> createState() => HomeScreenTabState();
 }
 
-class _HomeScreenTabState extends State<HomeScreenTab> {
+class HomeScreenTabState extends State<HomeScreenTab> {
   bool _clockedIn   = false;
   bool _loading     = false;
   String? _message;
@@ -39,6 +43,7 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
   DateTime? _clockInTime;
   String? _sessionId;
   Timer? _timeTicker;
+  Timer? _autoSyncTimer;
   DateTime _now = DateTime.now();
   List<dynamic> _myRecords = [];
 
@@ -60,6 +65,13 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
     _timeTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _now = DateTime.now());
     });
+    _autoSyncTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (mounted) {
+        _checkStatus();
+        _fetchLeavesData();
+        _fetchTeamApprovalsCount();
+      }
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       AppUpdateService.checkForUpdates(context);
     });
@@ -70,7 +82,19 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
     themeController.removeListener(_onThemeChanged);
     _locTimer?.cancel();
     _timeTicker?.cancel();
+    _autoSyncTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> refreshData() async {
+    try {
+      await Future.wait([
+        _checkStatus(),
+        _fetchData(),
+        _fetchLeavesData(),
+        _fetchTeamApprovalsCount(),
+      ]);
+    } catch (_) {}
   }
 
   void _onThemeChanged() {
@@ -131,7 +155,7 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
           orElse: () => null,
         );
         if (active != null) {
-          final ci = DateTime.tryParse(active['clock_in']?.toString() ?? '');
+          final ci = parseAppDateTime(active['clock_in']);
           if (mounted) {
             setState(() {
               _clockedIn   = true;
@@ -146,7 +170,7 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
           final todayRecord = data.firstWhere(
             (r) {
               if (r['clock_in'] == null) return false;
-              final ci = DateTime.tryParse(r['clock_in'].toString());
+              final ci = parseAppDateTime(r['clock_in']);
               return ci != null && ci.year == now.year && ci.month == now.month && ci.day == now.day;
             },
             orElse: () => null,
@@ -154,7 +178,7 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
           if (mounted) {
             setState(() {
               _clockedIn = false;
-              _clockInTime = todayRecord != null ? DateTime.tryParse(todayRecord['clock_in']?.toString() ?? '') : null;
+              _clockInTime = todayRecord != null ? parseAppDateTime(todayRecord['clock_in']) : null;
             });
           }
         }
@@ -310,8 +334,8 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
   String _getTodayWorkingHrsString(List<dynamic> todayRecords) {
     int completedSecs = 0;
     for (var r in todayRecords) {
-      final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
-      final co = r['clock_out'] != null ? DateTime.tryParse(r['clock_out'].toString()) : null;
+      final ci = parseAppDateTime(r['clock_in']);
+      final co = parseAppDateTime(r['clock_out']);
       if (ci != null && co != null) {
         completedSecs += co.difference(ci).inSeconds;
       } else if (r['total_minutes'] != null) {
@@ -321,7 +345,9 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
 
     int activeSecs = 0;
     if (_clockedIn && _clockInTime != null) {
-      activeSecs = DateTime.now().difference(_clockInTime!).inSeconds;
+      final localCi = _clockInTime!.isUtc ? _clockInTime!.toLocal() : _clockInTime!;
+      activeSecs = DateTime.now().difference(localCi).inSeconds;
+      if (activeSecs < 0) activeSecs = 0;
     }
 
     final totalSecs = completedSecs + activeSecs;
@@ -347,7 +373,7 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
 
     // Aggregate today's records
     final todayRecords = _myRecords.where((r) {
-      final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
+      final ci = parseAppDateTime(r['clock_in']);
       if (ci != null && ci.year == _now.year && ci.month == _now.month && ci.day == _now.day) {
         return true;
       }
@@ -356,8 +382,8 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
 
     // Sort today's records ascending by clock_in
     todayRecords.sort((a, b) {
-      final aIn = a['clock_in'] != null ? DateTime.parse(a['clock_in'].toString()) : DateTime(1970);
-      final bIn = b['clock_in'] != null ? DateTime.parse(b['clock_in'].toString()) : DateTime(1970);
+      final aIn = parseAppDateTime(a['clock_in']) ?? DateTime(1970);
+      final bIn = parseAppDateTime(b['clock_in']) ?? DateTime(1970);
       return aIn.compareTo(bIn);
     });
 
@@ -366,15 +392,16 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
     if (!_clockedIn && todayRecords.isNotEmpty) {
       for (var r in todayRecords.reversed) {
         if (r['clock_out'] != null) {
-          lastCheckOutToday = DateTime.tryParse(r['clock_out'].toString());
+          lastCheckOutToday = parseAppDateTime(r['clock_out']);
           break;
         }
       }
     }
 
     // Current Active Shift Timings
-    final String displayCheckIn = (_clockedIn && _clockInTime != null)
-        ? DateFormat('hh:mm a').format(_clockInTime!)
+    final localClockInTime = _clockInTime != null ? (_clockInTime!.isUtc ? _clockInTime!.toLocal() : _clockInTime!) : null;
+    final String displayCheckIn = (_clockedIn && localClockInTime != null)
+        ? DateFormat('hh:mm a').format(localClockInTime)
         : '-- : --';
 
     final String displayCheckOut = _clockedIn
@@ -383,8 +410,8 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
             ? DateFormat('hh:mm a').format(lastCheckOutToday)
             : '-- : --');
 
-    final DateTime targetShiftIn = (_clockedIn && _clockInTime != null)
-        ? _clockInTime!
+    final DateTime targetShiftIn = (_clockedIn && localClockInTime != null)
+        ? localClockInTime
         : DateTime(_now.year, _now.month, _now.day, 9, 30);
     final DateTime targetShiftOut = targetShiftIn.add(const Duration(hours: 9));
     final String workShiftStr = '${DateFormat('hh:mm a').format(targetShiftIn)} – ${DateFormat('hh:mm a').format(targetShiftOut)}';
@@ -394,7 +421,7 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
     int targetYear = _now.year;
     if (_myRecords.isNotEmpty) {
       for (var r in _myRecords) {
-        final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
+        final ci = parseAppDateTime(r['clock_in']);
         if (ci != null) {
           targetMonth = ci.month;
           targetYear = ci.year;
@@ -409,7 +436,7 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
     final Set<int> presentDaySet = {};
 
     for (var r in _myRecords) {
-      final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
+      final ci = parseAppDateTime(r['clock_in']);
       final mins = r['total_minutes'] as int? ?? 0;
       if (ci != null && ci.month == targetMonth && ci.year == targetYear) {
         monthShifts++;
@@ -434,7 +461,7 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
     // Calculate weekly worked hours for Mon-Fri
     final weekMins = <int, int>{};
     for (var r in _myRecords) {
-      final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
+      final ci = parseAppDateTime(r['clock_in']);
       final mins = r['total_minutes'] as int? ?? 0;
       if (ci != null) {
         weekMins[ci.weekday] = (weekMins[ci.weekday] ?? 0) + mins;
@@ -506,126 +533,134 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
           const SizedBox(width: 8),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        children: [
-          // ── Profile Header Bar ─────────────────────────────────────────────
-          Row(
-            children: [
-              ProfileAvatarBadge(
-                name: fullName,
-                isIncomplete: (widget.user['phone_number']?.toString() ?? '').trim().isEmpty ||
-                    ((widget.user['date_of_joining'] ?? widget.user['joining_date'])?.toString() ?? '').trim().isEmpty ||
-                    !RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$').hasMatch((widget.user['email']?.toString() ?? '').trim()),
-                radius: 24,
-                borderWidth: 2.5,
-                fontSize: 18,
-                onTap: widget.onNavigateToProfile,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: GestureDetector(
+      body: RefreshIndicator(
+        onRefresh: refreshData,
+        color: amberPrimary,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          children: [
+            // ── Profile Header Bar ─────────────────────────────────────────────
+            Row(
+              children: [
+                ProfileAvatarBadge(
+                  name: fullName,
+                  isIncomplete: (widget.user['phone_number']?.toString() ?? '').trim().isEmpty ||
+                      ((widget.user['date_of_joining'] ?? widget.user['joining_date'])?.toString() ?? '').trim().isEmpty ||
+                      !RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$').hasMatch((widget.user['email']?.toString() ?? '').trim()),
+                  radius: 24,
+                  borderWidth: 2.5,
+                  fontSize: 18,
                   onTap: widget.onNavigateToProfile,
-                  behavior: HitTestBehavior.opaque,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Text(
-                            fullName,
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.3),
-                          ),
-                          const SizedBox(width: 4),
-                          const Icon(Icons.verified, color: amberPrimary, size: 16),
-                        ],
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        'UI/UX Designer • Product Team ($empId)',
-                        style: TextStyle(fontSize: 12, color: textSecondary, fontWeight: FontWeight.w500),
-                      ),
-                    ],
-                  ),
                 ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: _clockedIn
-                      ? const Color(0xFF9FF1BD).withAlpha(120)
-                      : (isDark ? const Color(0xFF1F2633) : const Color(0xFFEAEFF8)),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: BoxDecoration(
-                        color: _clockedIn ? const Color(0xFF146C43) : textSecondary,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      _clockedIn ? 'On Shift' : 'Off Shift',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: _clockedIn ? const Color(0xFF002110) : textSecondary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-
-          if (_teamPendingApprovalsCount > 0) ...[
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF2E171C) : const Color(0xFFFFF1F2),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFFFF2A55).withAlpha(120)),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFF2A55).withAlpha(35),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.pending_actions_rounded, color: Color(0xFFFF2A55), size: 18),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: widget.onNavigateToProfile,
+                    behavior: HitTestBehavior.opaque,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          '$_teamPendingApprovalsCount Team Leave Request${_teamPendingApprovalsCount > 1 ? 's' : ''} Pending',
-                          style: const TextStyle(
-                            color: Color(0xFFE11D48),
-                            fontWeight: FontWeight.w800,
-                            fontSize: 13,
-                          ),
+                        Row(
+                          children: [
+                            Text(
+                              fullName,
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.3),
+                            ),
+                            const SizedBox(width: 4),
+                            const Icon(Icons.verified, color: amberPrimary, size: 16),
+                          ],
                         ),
+                        const SizedBox(height: 2),
                         Text(
-                          'Review & approve subordinates in Leave Tab',
-                          style: TextStyle(color: textSecondary, fontSize: 11),
+                          'UI/UX Designer • Product Team ($empId)',
+                          style: TextStyle(fontSize: 12, color: textSecondary, fontWeight: FontWeight.w500),
                         ),
                       ],
                     ),
                   ),
-                  const Icon(Icons.arrow_forward_ios_rounded, color: Color(0xFFE11D48), size: 14),
-                ],
-              ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: _clockedIn
+                        ? const Color(0xFF9FF1BD).withAlpha(120)
+                        : (isDark ? const Color(0xFF1F2633) : const Color(0xFFEAEFF8)),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          color: _clockedIn ? const Color(0xFF146C43) : textSecondary,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        _clockedIn ? 'On Shift' : 'Off Shift',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: _clockedIn ? const Color(0xFF002110) : textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          ],
+
+            if (_teamPendingApprovalsCount > 0) ...[
+              const SizedBox(height: 14),
+              GestureDetector(
+                onTap: () => widget.onNavigateToLeave?.call(),
+                behavior: HitTestBehavior.opaque,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF2E171C) : const Color(0xFFFFF1F2),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFFF2A55).withAlpha(120)),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFF2A55).withAlpha(35),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.pending_actions_rounded, color: Color(0xFFFF2A55), size: 18),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '$_teamPendingApprovalsCount Team Leave Request${_teamPendingApprovalsCount > 1 ? 's' : ''} Pending',
+                              style: const TextStyle(
+                                color: Color(0xFFE11D48),
+                                fontWeight: FontWeight.w800,
+                                fontSize: 13,
+                              ),
+                            ),
+                            Text(
+                              'Review & approve subordinates in Leave Tab',
+                              style: TextStyle(color: textSecondary, fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.arrow_forward_ios_rounded, color: Color(0xFFE11D48), size: 14),
+                    ],
+                  ),
+                ),
+              ),
+            ],
 
           const SizedBox(height: 20),
 
@@ -790,67 +825,75 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
           Row(
             children: [
               Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                  decoration: BoxDecoration(
-                    color: bgCard,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: borderCol),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: isDark ? const Color(0xFF221A30) : const Color(0xFFEDE7F6),
-                          borderRadius: BorderRadius.circular(14),
+                child: GestureDetector(
+                  onTap: () => widget.onNavigateToLeave?.call(),
+                  behavior: HitTestBehavior.opaque,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                    decoration: BoxDecoration(
+                      color: bgCard,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: borderCol),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF221A30) : const Color(0xFFEDE7F6),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Icon(Icons.calendar_today_rounded, color: Color(0xFF9D7AE2), size: 20),
                         ),
-                        child: const Icon(Icons.calendar_today_rounded, color: Color(0xFF9D7AE2), size: 20),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(_fmtDays(_remainingLeaves), style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary)),
-                            Text('Leave Days Left', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500)),
-                          ],
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(_fmtDays(_remainingLeaves), style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary)),
+                              Text('Leave Days Left', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500)),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                  decoration: BoxDecoration(
-                    color: bgCard,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: borderCol),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: isDark ? const Color(0xFF2B2010) : const Color(0xFFFFF8E1),
-                          borderRadius: BorderRadius.circular(14),
+                child: GestureDetector(
+                  onTap: () => widget.onNavigateToLeave?.call(),
+                  behavior: HitTestBehavior.opaque,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                    decoration: BoxDecoration(
+                      color: bgCard,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: borderCol),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF2B2010) : const Color(0xFFFFF8E1),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Icon(Icons.pending_actions_rounded, color: Color(0xFFF59E0B), size: 20),
                         ),
-                        child: const Icon(Icons.pending_actions_rounded, color: Color(0xFFF59E0B), size: 20),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('$_pendingLeavesCount', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary)),
-                            Text('Pending Requests', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500)),
-                          ],
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('$_pendingLeavesCount', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary)),
+                              Text('Pending Requests', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500)),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1087,8 +1130,8 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
           if (todayRecords.isNotEmpty)
             ...List.generate(todayRecords.length, (idx) {
               final r = todayRecords[idx];
-              final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
-              final co = r['clock_out'] != null ? DateTime.tryParse(r['clock_out'].toString()) : null;
+              final ci = parseAppDateTime(r['clock_in']);
+              final co = parseAppDateTime(r['clock_out']);
 
               final ciStr = ci != null ? DateFormat('hh:mm a').format(ci) : '--:--';
               final coStr = co != null ? DateFormat('hh:mm a').format(co) : '--:--';
@@ -1225,8 +1268,9 @@ class _HomeScreenTabState extends State<HomeScreenTab> {
           const SizedBox(height: 20),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _bar(String day, double height, bool isDark, {bool isActive = false}) {
     return Column(

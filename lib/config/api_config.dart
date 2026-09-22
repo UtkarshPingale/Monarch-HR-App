@@ -4,8 +4,8 @@ import 'package:http/http.dart' as http;
 
 // ── CONFIG ───────────────────────────────────────────────────────────────────
 // Python PostgreSQL API Server URL
-// Use "http://10.0.2.2:3001" for Android Emulator, or "http://192.168.1.111:3001" for physical phone/LAN
-const String baseUrl = "http://175.100.175.42:3001";
+// Use "http://10.0.2.2:3001" for Android Emulator, or "http://192.168.1.111:3001" for physical phone/LAN, or when is port is live "http://175.100.175.42:3001"
+const String baseUrl = "http://10.0.2.2:3001";
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 Future<Map<String, dynamic>> apiPost(String path, Map body, {String? token}) async {

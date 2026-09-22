@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api_config.dart';
 import '../controllers/theme_controller.dart';
 import '../services/app_update_service.dart';
@@ -35,7 +36,8 @@ class _EngageTabState extends State<EngageTab> {
 
   bool _saving = false;
   bool _dailyReminder = true;
-  bool _geofenceCheckIn = true;
+  TimeOfDay _reminderTime = const TimeOfDay(hour: 8, minute: 55);
+  bool _geofenceCheckIn = false;
 
   @override
   void initState() {
@@ -43,7 +45,91 @@ class _EngageTabState extends State<EngageTab> {
     themeController.addListener(_onThemeChanged);
     _currentUser = Map<String, dynamic>.from(widget.user);
     _initControllers();
+    _loadAttendanceSettings();
     _fetchFreshProfile();
+  }
+
+  Future<void> _loadAttendanceSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (mounted) {
+        setState(() {
+          _dailyReminder = prefs.getBool('pref_daily_reminder') ?? true;
+          final h = prefs.getInt('pref_reminder_hour') ?? 8;
+          final m = prefs.getInt('pref_reminder_minute') ?? 55;
+          _reminderTime = TimeOfDay(hour: h, minute: m);
+          _geofenceCheckIn = prefs.getBool('pref_geofence_checkin') ?? false;
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveDailyReminder(bool val) async {
+    setState(() => _dailyReminder = val);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('pref_daily_reminder', val);
+    } catch (_) {}
+  }
+
+  Future<void> _saveGeofenceCheckIn(bool val) async {
+    setState(() => _geofenceCheckIn = val);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('pref_geofence_checkin', val);
+    } catch (_) {}
+  }
+
+  String _formatTimeOfDay(TimeOfDay tod) {
+    final now = DateTime.now();
+    final dt = DateTime(now.year, now.month, now.day, tod.hour, tod.minute);
+    return DateFormat('hh:mm a').format(dt);
+  }
+
+  String _getReminderSubtitle() {
+    final timeStr = _formatTimeOfDay(_reminderTime);
+    if (_reminderTime.hour == 8 && _reminderTime.minute == 55) {
+      return 'Ping at $timeStr (5 min prior)';
+    }
+    return 'Ping at $timeStr (Custom)';
+  }
+
+  Future<void> _pickReminderTime() async {
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _reminderTime,
+      helpText: 'SET CHECK-IN REMINDER TIME',
+      builder: (ctx, child) {
+        final isDark = themeController.isDarkMode;
+        return Theme(
+          data: Theme.of(ctx).copyWith(
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: const Color(0xFFF5A952),
+              brightness: isDark ? Brightness.dark : Brightness.light,
+              primary: const Color(0xFFF5A952),
+              onPrimary: const Color(0xFF6B3F00),
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+    if (picked != null && mounted) {
+      setState(() => _reminderTime = picked);
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('pref_reminder_hour', picked.hour);
+        await prefs.setInt('pref_reminder_minute', picked.minute);
+      } catch (_) {}
+      scaffoldMessenger.showSnackBar(
+        SnackBar(
+          content: Text('Daily Check-in Reminder set to ${_formatTimeOfDay(picked)}'),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   @override
@@ -856,20 +942,6 @@ class _EngageTabState extends State<EngageTab> {
                   textSecondary: textSecondary,
                   borderCol: borderCol,
                 ),
-                const SizedBox(height: 10),
-
-                // Office Location Row
-                _detailRow(
-                  Icons.corporate_fare_rounded,
-                  'Office Location',
-                  'Indian Railway HQ • Building 4, Floor 3',
-                  const Color(0xFF10B981),
-                  badgeIcon: Icons.near_me_rounded,
-                  bgInput: bgInput,
-                  textPrimary: textPrimary,
-                  textSecondary: textSecondary,
-                  borderCol: borderCol,
-                ),
               ],
             ),
           ),
@@ -898,57 +970,110 @@ class _EngageTabState extends State<EngageTab> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(color: bgInput, shape: BoxShape.circle),
-                          child: Icon(Icons.notifications_active_rounded, color: textPrimary, size: 18),
+                    Expanded(
+                      child: InkWell(
+                        onTap: _dailyReminder ? _pickReminderTime : null,
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(color: bgInput, shape: BoxShape.circle),
+                                child: Icon(Icons.notifications_active_rounded, color: textPrimary, size: 18),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Text('Daily Check-in Reminder',
+                                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary)),
+                                        if (_dailyReminder) ...[
+                                          const SizedBox(width: 6),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: amberPrimary.withAlpha(isDark ? 40 : 25),
+                                              borderRadius: BorderRadius.circular(6),
+                                              border: Border.all(color: amberPrimary.withAlpha(80)),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(Icons.access_time_rounded, size: 11, color: amberDark),
+                                                const SizedBox(width: 3),
+                                                Text(
+                                                  _formatTimeOfDay(_reminderTime),
+                                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: amberDark),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      _dailyReminder ? _getReminderSubtitle() : 'Disabled',
+                                      style: TextStyle(fontSize: 11, color: textSecondary),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                        const SizedBox(width: 10),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Daily Check-in Reminder', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary)),
-                            Text('Ping at 08:45 AM (15 min prior)', style: TextStyle(fontSize: 11, color: textSecondary)),
-                          ],
-                        ),
-                      ],
+                      ),
                     ),
                     Switch(
                       value: _dailyReminder,
                       activeThumbColor: amberPrimary,
-                      onChanged: (val) => setState(() => _dailyReminder = val),
+                      onChanged: (val) => _saveDailyReminder(val),
                     ),
                   ],
                 ),
-                const Divider(color: Color(0xFF1F2633), height: 20),
+                Divider(color: borderCol, height: 20),
 
                 // Setting 2: Geofence
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(color: bgInput, shape: BoxShape.circle),
-                          child: Icon(Icons.location_on_rounded, color: textPrimary, size: 18),
-                        ),
-                        const SizedBox(width: 10),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Geofence Auto Check-in', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary)),
-                            Text('Detect HQ beacon perimeter', style: TextStyle(fontSize: 11, color: textSecondary)),
-                          ],
-                        ),
-                      ],
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(color: bgInput, shape: BoxShape.circle),
+                            child: Icon(Icons.location_on_rounded, color: textPrimary, size: 18),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Geofence Auto Check-in',
+                                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary)),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _geofenceCheckIn
+                                      ? 'Detect HQ beacon perimeter (Active)'
+                                      : 'Detect HQ beacon perimeter (Disabled)',
+                                  style: TextStyle(fontSize: 11, color: textSecondary),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                     Switch(
                       value: _geofenceCheckIn,
                       activeThumbColor: amberPrimary,
-                      onChanged: (val) => setState(() => _geofenceCheckIn = val),
+                      onChanged: (val) => _saveGeofenceCheckIn(val),
                     ),
                   ],
                 ),

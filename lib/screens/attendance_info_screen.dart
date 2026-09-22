@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../config/api_config.dart';
 import '../controllers/theme_controller.dart';
+import '../services/date_time_helper.dart';
 import '../widgets/percentage_donut_painter.dart';
 import '../widgets/profile_avatar_badge.dart';
 
@@ -32,9 +34,36 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
   bool _actionInProgress = false;
   int _mainTabSegment = 0; // 0 = My Attendance, 1 = Punch Approvals
   String _activeSubTab = 'Day wise'; // 'Day wise', 'Weekly', 'Overview'
-  DateTime _selectedMonth = DateTime.now();
-  int? _viewingDetailDay; // Null = show calendar, DayNumber = show detail view
+  static DateTime _initialCycleMonth() {
+    final now = DateTime.now();
+    if (now.day >= 26) {
+      return DateTime(now.year, now.month + 1, 1);
+    } else {
+      return DateTime(now.year, now.month, 1);
+    }
+  }
+
+  DateTime _selectedMonth = _initialCycleMonth();
+  DateTime? _viewingDetailDate; // Null = show calendar, DateTime = show detail view for that date
   double _remainingDays = 18.0;
+  bool _showLegend = false; // Collapsed by default, toggleable by user
+  double _infoTabDragDeltaX = 0;
+  double _calDragDeltaX = 0;
+  double _detailDragDeltaX = 0;
+
+  DateTime get _cycleStartDate => DateTime(_selectedMonth.year, _selectedMonth.month - 1, 26);
+  DateTime get _cycleEndDate => DateTime(_selectedMonth.year, _selectedMonth.month, 25);
+
+  List<DateTime> get _cycleDays {
+    final List<DateTime> list = [];
+    DateTime cur = _cycleStartDate;
+    final end = _cycleEndDate;
+    while (!cur.isAfter(end)) {
+      list.add(cur);
+      cur = cur.add(const Duration(days: 1));
+    }
+    return list;
+  }
 
   final TextEditingController _leaveTitleCtrl = TextEditingController();
   final TextEditingController _leaveNoteCtrl = TextEditingController();
@@ -54,10 +83,15 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     return role == 'teamleader' || role == 'subteamlead' || role == 'seniorteamlead' || role == 'manager' || role == 'projectmanager' || role == 'admin' || role == 'hr';
   }
 
+  bool get _isManager {
+    final role = (widget.user['role'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
+    return role == 'manager' || role == 'projectmanager' || role == 'admin' || role == 'hr';
+  }
+
   void setSubTab(String tabName) {
     setState(() {
       _activeSubTab = tabName;
-      _viewingDetailDay = null;
+      _viewingDetailDate = null;
     });
   }
 
@@ -66,8 +100,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
       setState(() => _mainTabSegment = 0);
       return true;
     }
-    if (_viewingDetailDay != null) {
-      setState(() => _viewingDetailDay = null);
+    if (_viewingDetailDate != null) {
+      setState(() => _viewingDetailDate = null);
       return true;
     }
     if (_activeSubTab != 'Day wise') {
@@ -77,11 +111,18 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     return false;
   }
 
+  Timer? _autoSyncTimer;
+
   @override
   void initState() {
     super.initState();
     themeController.addListener(_onThemeChanged);
     _loadData();
+    _autoSyncTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (mounted) {
+        _loadDataSilently();
+      }
+    });
   }
 
   @override
@@ -89,11 +130,37 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     themeController.removeListener(_onThemeChanged);
     _leaveTitleCtrl.dispose();
     _leaveNoteCtrl.dispose();
+    _autoSyncTimer?.cancel();
     super.dispose();
   }
 
+  Future<void> refreshData() async => await _loadData();
+
   void _onThemeChanged() {
     if (mounted) setState(() {});
+  }
+
+  Future<void> _loadDataSilently() async {
+    try {
+      final list = await apiGet('/api/attendance/me', token: widget.token).timeout(const Duration(seconds: 4));
+      final holidays = await apiGet('/api/holidays').timeout(const Duration(seconds: 4));
+      final leavesRes = await apiGetJson('/api/leaves/me', token: widget.token).timeout(const Duration(seconds: 4));
+
+      if (_isLeaderOrManager) {
+        _loadPunchRequests();
+      }
+
+      if (mounted) {
+        setState(() {
+          _attendanceRecords = list;
+          _holidays = holidays;
+          _userLeaves = (leavesRes is Map && leavesRes['leaves'] is List) ? leavesRes['leaves'] : [];
+          if (leavesRes is Map && leavesRes['remaining_days'] != null) {
+            _remainingDays = double.tryParse(leavesRes['remaining_days']?.toString() ?? '') ?? 18.0;
+          }
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadData() async {
@@ -273,7 +340,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
     // Filter attendance records strictly for current week
     final currentWeekRecords = _attendanceRecords.where((r) {
-      final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
+      final ci = parseAppDateTime(r['clock_in']);
       if (ci != null && !ci.isBefore(sun) && ci.isBefore(nextSun)) {
         return true;
       }
@@ -296,7 +363,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     // Map daily minutes for current week (0: Sun, 1: Mon, ... 6: Sat)
     final Map<int, int> weekDailyMins = {};
     for (var r in currentWeekRecords) {
-      final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
+      final ci = parseAppDateTime(r['clock_in']);
       final mins = r['total_minutes'] as int? ?? 0;
       if (ci != null) {
         final dayIdx = ci.weekday % 7;
@@ -323,10 +390,10 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     });
 
     return PopScope(
-      canPop: _viewingDetailDay == null,
+      canPop: _viewingDetailDate == null,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _viewingDetailDay != null) {
-          setState(() => _viewingDetailDay = null);
+        if (!didPop && _viewingDetailDate != null) {
+          setState(() => _viewingDetailDate = null);
         }
       },
       child: Scaffold(
@@ -389,7 +456,40 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
         ),
         body: _loading
             ? const Center(child: CircularProgressIndicator())
-            : ListView(
+            : GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragStart: (_) => _infoTabDragDeltaX = 0,
+                onHorizontalDragUpdate: (details) => _infoTabDragDeltaX += details.delta.dx,
+                onHorizontalDragEnd: (details) {
+                  final velocity = details.primaryVelocity ?? 0;
+                  final isSwipeLeft = velocity < -180 || _infoTabDragDeltaX < -50;
+                  final isSwipeRight = velocity > 180 || _infoTabDragDeltaX > 50;
+                  if (!isSwipeLeft && !isSwipeRight) return;
+
+                  if (_mainTabSegment == 0) {
+                    if (isSwipeLeft) {
+                      if (_activeSubTab == 'Day wise') {
+                        setSubTab('Weekly');
+                      } else if (_activeSubTab == 'Weekly') {
+                        setSubTab('Overview');
+                      } else if (_activeSubTab == 'Overview' && _isLeaderOrManager) {
+                        setState(() => _mainTabSegment = 1);
+                        _loadPunchRequests();
+                      }
+                    } else if (isSwipeRight) {
+                      if (_activeSubTab == 'Overview') {
+                        setSubTab('Weekly');
+                      } else if (_activeSubTab == 'Weekly') {
+                        setSubTab('Day wise');
+                      }
+                    }
+                  } else if (_mainTabSegment == 1) {
+                    if (isSwipeRight) {
+                      setState(() => _mainTabSegment = 0);
+                    }
+                  }
+                },
+                child: ListView(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                 children: [
                   // ── Top Main Switcher for Team Leader & Manager (My Attendance vs Punch Approvals) ──
@@ -539,10 +639,29 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
                   // ── Tab View 1: Day Wise View ────────────────────────────────
                   if (_activeSubTab == 'Day wise') ...[
-                    if (_viewingDetailDay == null)
+                    if (_viewingDetailDate == null)
                       _buildDayWiseView(bgCard, borderCol, textPrimary, textSecondary, holidayDates, now, isDark)
                     else
-                      _buildDayDetailView(bgCard, bgInput, borderCol, textPrimary, textSecondary, amberPrimary, amberDark, isDark),
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onHorizontalDragStart: (_) => _detailDragDeltaX = 0,
+                        onHorizontalDragUpdate: (details) => _detailDragDeltaX += details.delta.dx,
+                        onHorizontalDragEnd: (details) {
+                          final velocity = details.primaryVelocity ?? 0;
+                          if (_viewingDetailDate != null) {
+                            if (velocity < -180 || _detailDragDeltaX < -50) {
+                              setState(() {
+                                _viewingDetailDate = _viewingDetailDate!.add(const Duration(days: 1));
+                              });
+                            } else if (velocity > 180 || _detailDragDeltaX > 50) {
+                              setState(() {
+                                _viewingDetailDate = _viewingDetailDate!.subtract(const Duration(days: 1));
+                              });
+                            }
+                          }
+                        },
+                        child: _buildDayDetailView(bgCard, bgInput, borderCol, textPrimary, textSecondary, amberPrimary, amberDark, isDark),
+                      ),
                   ],
 
                   // ── Tab View 2: Weekly View ──────────────────────────────────
@@ -699,6 +818,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                 const SizedBox(height: 20),
               ],
               ),
+            ),
       ),
     );
   }
@@ -709,7 +829,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
       child: GestureDetector(
         onTap: () => setState(() {
           _activeSubTab = title;
-          _viewingDetailDay = null; // Reset detail view on tab switch
+          _viewingDetailDate = null; // Reset detail view on tab switch
         }),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
@@ -738,12 +858,10 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     );
   }
 
-  // ── Month Calendar View for Day Wise (Seamless Table Style) ──────────────────
+  // ── Month Calendar View for Day Wise (26th to 25th Company Cycle) ───────────
   Widget _buildDayWiseView(Color bgCard, Color borderCol, Color textPrimary, Color textSecondary, Set<String> holidayDates, DateTime now, bool isDark) {
-    final daysInMonth = DateTime(_selectedMonth.year, _selectedMonth.month + 1, 0).day;
-    final firstDayOfMonth = DateTime(_selectedMonth.year, _selectedMonth.month, 1);
-    final offset = firstDayOfMonth.weekday % 7; // Sunday = 0
-    final prevMonthDays = DateTime(_selectedMonth.year, _selectedMonth.month, 0).day;
+    final cycleDays = _cycleDays;
+    final offset = _cycleStartDate.weekday % 7; // Sunday = 0
     final todayMidnight = DateTime(now.year, now.month, now.day);
 
     final Set<String> attendanceDates = {};
@@ -756,8 +874,11 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
       }
     }
 
-    final Set<String> leaveDates = {};
+    final Map<String, Map<String, dynamic>> leaveDateMap = {};
     for (var l in _userLeaves) {
+      final st = (l['status'] ?? '').toString().trim().toLowerCase();
+      // Only approved leaves are mapped to display EL / LP / CO badges on the calendar grid
+      if (st != 'approved') continue;
       if (l['start_date'] != null) {
         final sStr = l['start_date'].toString().split('T')[0];
         final eStr = (l['end_date'] ?? l['start_date']).toString().split('T')[0];
@@ -765,18 +886,36 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
           var s = DateTime.parse(sStr);
           var e = DateTime.parse(eStr);
           while (!s.isAfter(e)) {
-            leaveDates.add(DateFormat('yyyy-MM-dd').format(s));
+            leaveDateMap[DateFormat('yyyy-MM-dd').format(s)] = Map<String, dynamic>.from(l);
             s = s.add(const Duration(days: 1));
           }
         } catch (_) {
-          leaveDates.add(sStr);
+          leaveDateMap[sStr] = Map<String, dynamic>.from(l);
         }
       }
     }
 
     final gridBorderCol = isDark ? const Color(0xFF1F2633) : const Color(0xFFE2E8F0);
 
-    return Container(
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onHorizontalDragStart: (_) => _calDragDeltaX = 0,
+      onHorizontalDragUpdate: (details) => _calDragDeltaX += details.delta.dx,
+      onHorizontalDragEnd: (details) {
+        final velocity = details.primaryVelocity ?? 0;
+        if (velocity < -150 || _calDragDeltaX < -45) {
+          // Swipe Left -> Next Month
+          setState(() {
+            _selectedMonth = DateTime(_selectedMonth.year, _selectedMonth.month + 1, 1);
+          });
+        } else if (velocity > 150 || _calDragDeltaX > 45) {
+          // Swipe Right -> Previous Month
+          setState(() {
+            _selectedMonth = DateTime(_selectedMonth.year, _selectedMonth.month - 1, 1);
+          });
+        }
+      },
+      child: Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: bgCard,
@@ -785,7 +924,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
       ),
       child: Column(
         children: [
-          // Header: Month Navigation & Days Badge
+          // Header: Month Navigation, Legend Toggle & Days Badge (26th to 25th cycle)
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -799,8 +938,15 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                       });
                     },
                   ),
-                  Text(DateFormat('MMMM yyyy').format(_selectedMonth),
-                      style: TextStyle(color: textPrimary, fontSize: 18, fontWeight: FontWeight.w800, letterSpacing: -0.4)),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(DateFormat('MMMM yyyy').format(_selectedMonth),
+                          style: TextStyle(color: textPrimary, fontSize: 17, fontWeight: FontWeight.w800, letterSpacing: -0.4)),
+                      Text('${DateFormat('d MMM').format(_cycleStartDate)} – ${DateFormat('d MMM').format(_cycleEndDate)}',
+                          style: TextStyle(color: textSecondary, fontSize: 11, fontWeight: FontWeight.w600)),
+                    ],
+                  ),
                   IconButton(
                     icon: Icon(Icons.chevron_right_rounded, color: textPrimary),
                     onPressed: () {
@@ -811,33 +957,91 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   ),
                 ],
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF1F2633) : const Color(0xFFF0F4FD),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Text('$daysInMonth Days', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: textSecondary)),
+              Row(
+                children: [
+                  InkWell(
+                    onTap: () => setState(() => _showLegend = !_showLegend),
+                    borderRadius: BorderRadius.circular(16),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _showLegend
+                            ? (isDark ? const Color(0xFF261D12) : const Color(0xFFFFECC8))
+                            : (isDark ? const Color(0xFF1F2633) : const Color(0xFFF0F4FD)),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: _showLegend ? const Color(0xFF895100).withAlpha(80) : borderCol.withAlpha(80),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _showLegend ? Icons.info_rounded : Icons.info_outline_rounded,
+                            size: 13,
+                            color: _showLegend ? const Color(0xFF895100) : textSecondary,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            'Legend',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: _showLegend ? const Color(0xFF895100) : textSecondary,
+                            ),
+                          ),
+                          Icon(
+                            _showLegend ? Icons.arrow_drop_up : Icons.arrow_drop_down,
+                            size: 14,
+                            color: _showLegend ? const Color(0xFF895100) : textSecondary,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF1F2633) : const Color(0xFFF0F4FD),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Text('${cycleDays.length} Days', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: textSecondary)),
+                  ),
+                ],
               ),
             ],
           ),
-          const SizedBox(height: 12),
 
-          // Legend Status Bar
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            alignment: WrapAlignment.center,
-            children: [
-              _legendPill('Present (P)', isDark ? const Color(0xFF11221E) : const Color(0xFFE8F8F0), isDark ? const Color(0xFF34D399) : const Color(0xFF146C43)),
-              _legendPill('Half (P:A/A:P)', isDark ? const Color(0xFF241C14) : const Color(0xFFFFF3E0), isDark ? const Color(0xFFFBA442) : const Color(0xFF895100)),
-              _legendPill('Absent (A)', isDark ? const Color(0xFF2B1618) : const Color(0xFFFFDAD6), isDark ? const Color(0xFFF87171) : const Color(0xFFBA1A1A)),
-              _legendPill('Leave', isDark ? const Color(0xFF26151B) : const Color(0xFFFDEBF3), isDark ? const Color(0xFFFB7185) : const Color(0xFFB91C68)),
-              _legendPill('Holiday', isDark ? const Color(0xFF132235) : const Color(0xFFE6F4FB), isDark ? const Color(0xFF38BDF8) : const Color(0xFF0C7AA6)),
-              _legendPill('Off', isDark ? const Color(0xFF161C28) : const Color(0xFFF0F3F8), isDark ? const Color(0xFF94A3B8) : textSecondary),
-            ],
-          ),
-          const SizedBox(height: 16),
+          // Collapsible / Expandable Legend Status Bar
+          if (_showLegend) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF161C28) : const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: borderCol),
+              ),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                alignment: WrapAlignment.center,
+                children: [
+                  _legendPill('Present (P)', isDark ? const Color(0xFF11221E) : const Color(0xFFE8F8F0), isDark ? const Color(0xFF34D399) : const Color(0xFF146C43)),
+                  _legendPill('Half (P:A/A:P)', isDark ? const Color(0xFF241C14) : const Color(0xFFFFF3E0), isDark ? const Color(0xFFFBA442) : const Color(0xFF895100)),
+                  _legendPill('Absent (A)', isDark ? const Color(0xFF2B1618) : const Color(0xFFFFDAD6), isDark ? const Color(0xFFF87171) : const Color(0xFFBA1A1A)),
+                  _legendPill('Earned Leave (EL)', isDark ? const Color(0xFF26151B) : const Color(0xFFFDEBF3), isDark ? const Color(0xFFFB7185) : const Color(0xFFB91C68)),
+                  _legendPill('Loss of Pay (LP)', isDark ? const Color(0xFF2E1A1A) : const Color(0xFFFFECEB), isDark ? const Color(0xFFFF6B6B) : const Color(0xFFC92A2A)),
+                  _legendPill('Comp-Off (CO)', isDark ? const Color(0xFF201B2E) : const Color(0xFFF3E8FF), isDark ? const Color(0xFFA855F7) : const Color(0xFF7E22CE)),
+                  _legendPill('Holiday (H)', isDark ? const Color(0xFF132235) : const Color(0xFFE6F4FB), isDark ? const Color(0xFF38BDF8) : const Color(0xFF0C7AA6)),
+                  _legendPill('Off Duty (Off)', isDark ? const Color(0xFF161C28) : const Color(0xFFF0F3F8), isDark ? const Color(0xFF94A3B8) : textSecondary),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 14),
 
           // Days Header (Sun - Sat)
           Container(
@@ -875,10 +1079,11 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   crossAxisSpacing: 0,
                   mainAxisSpacing: 0,
                 ),
-                itemCount: offset + daysInMonth,
+                itemCount: ((offset + cycleDays.length + 6) ~/ 7) * 7,
                 itemBuilder: (context, index) {
                   if (index < offset) {
-                    final prevDay = prevMonthDays - offset + index + 1;
+                    final padDt = _cycleStartDate.subtract(Duration(days: offset - index));
+                    final prevDay = padDt.day;
                     return Container(
                       padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
                       decoration: BoxDecoration(
@@ -895,8 +1100,28 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     );
                   }
 
-                  final day = index - offset + 1;
-                  final dt = DateTime(_selectedMonth.year, _selectedMonth.month, day);
+                  if (index >= offset + cycleDays.length) {
+                    final nextOffset = index - (offset + cycleDays.length) + 1;
+                    final padDt = _cycleEndDate.add(Duration(days: nextOffset));
+                    final nextDay = padDt.day;
+                    return Container(
+                      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF131722).withAlpha(80) : const Color(0xFFF8FAFC),
+                        border: Border.all(color: gridBorderCol.withAlpha(40), width: 0.5),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text('$nextDay',
+                              style: TextStyle(color: textSecondary.withAlpha(80), fontWeight: FontWeight.w500, fontSize: 11)),
+                        ],
+                      ),
+                    );
+                  }
+
+                  final dt = cycleDays[index - offset];
+                  final day = dt.day;
                   final dateKey = DateFormat('yyyy-MM-dd').format(dt);
 
                   final joinDate = _getJoiningDate();
@@ -908,7 +1133,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     return GestureDetector(
                       onTap: () {
                         setState(() {
-                          _viewingDetailDay = day;
+                          _viewingDetailDate = dt;
                         });
                       },
                       child: Container(
@@ -934,7 +1159,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   final isToday = (dt.year == now.year && dt.month == now.month && dt.day == now.day);
                   final isPast = dt.isBefore(todayMidnight);
 
-                  final hasLeave = leaveDates.contains(dateKey);
+                  final dayLeave = leaveDateMap[dateKey];
+                  final hasLeave = dayLeave != null;
                   final hasHoliday = holidayDates.contains(dateKey);
                   final isSunday = dt.weekday == DateTime.sunday;
                   final satIndex = ((dt.day - 1) ~/ 7) + 1;
@@ -980,10 +1206,23 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     bg = isDark ? const Color(0xFF261D12) : const Color(0xFFFFF3E0);
                     tagColor = isDark ? const Color(0xFFF5A952) : const Color(0xFF895100);
                   } else if (hasLeave) {
-                    mainTag = 'EL';
-                    subTag = 'LEAVE';
-                    bg = isDark ? const Color(0xFF26151B) : const Color(0xFFFCE4EC);
-                    tagColor = isDark ? const Color(0xFFFB7185) : const Color(0xFFB91C68);
+                    final lType = (dayLeave['leave_type'] ?? dayLeave['title'] ?? '').toString().toLowerCase();
+                    if (lType.contains('loss') || lType.contains('lop') || lType.contains('unpaid')) {
+                      mainTag = 'LP';
+                      subTag = 'LEAVE';
+                      bg = isDark ? const Color(0xFF2E1A1A) : const Color(0xFFFFECEB);
+                      tagColor = isDark ? const Color(0xFFFF6B6B) : const Color(0xFFC92A2A);
+                    } else if (lType.contains('comp') || lType.contains('co')) {
+                      mainTag = 'CO';
+                      subTag = 'LEAVE';
+                      bg = isDark ? const Color(0xFF201B2E) : const Color(0xFFF3E8FF);
+                      tagColor = isDark ? const Color(0xFFA855F7) : const Color(0xFF7E22CE);
+                    } else {
+                      mainTag = 'EL';
+                      subTag = 'LEAVE';
+                      bg = isDark ? const Color(0xFF26151B) : const Color(0xFFFCE4EC);
+                      tagColor = isDark ? const Color(0xFFFB7185) : const Color(0xFFB91C68);
+                    }
                   } else if (hasHoliday) {
                     mainTag = 'H';
                     subTag = 'FEST';
@@ -1024,7 +1263,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   return GestureDetector(
                     onTap: () {
                       setState(() {
-                        _viewingDetailDay = day; // Closes calendar and opens detail view!
+                        _viewingDetailDate = dt; // Closes calendar and opens detail view!
                       });
                     },
                     child: Container(
@@ -1093,15 +1332,15 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
           ),
         ],
       ),
+    ),
     );
   }
 
   // ── Detailed Session View (Multiple Shifts Supported for Single Day) ────────
   Widget _buildDayDetailView(Color bgCard, Color bgInput, Color borderCol, Color textPrimary, Color textSecondary, Color amberPrimary, Color amberDark, bool isDark) {
-    final selDay = _viewingDetailDay ?? DateTime.now().day;
-    final dt = DateTime(_selectedMonth.year, _selectedMonth.month, selDay);
+    final dt = _viewingDetailDate ?? DateTime.now();
     final dateKey = DateFormat('yyyy-MM-dd').format(dt);
-    final headerDateStr = DateFormat('EEEE, d MMMM').format(dt);
+    final headerDateStr = DateFormat('EEEE, d MMMM yyyy').format(dt);
 
     final joinDate = _getJoiningDate();
     final joinDateMidnight = joinDate != null ? DateTime(joinDate.year, joinDate.month, joinDate.day) : null;
@@ -1117,7 +1356,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             children: [
               IconButton(
                 icon: Icon(Icons.arrow_back_rounded, color: textPrimary),
-                onPressed: () => setState(() => _viewingDetailDay = null),
+                onPressed: () => setState(() => _viewingDetailDate = null),
               ),
               Text('Back to Calendar', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textPrimary)),
             ],
@@ -1177,8 +1416,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
     // Sort shift records ascending by clock_in time
     dayShifts.sort((a, b) {
-      final aIn = a['clock_in'] != null ? DateTime.parse(a['clock_in'].toString()) : DateTime(1970);
-      final bIn = b['clock_in'] != null ? DateTime.parse(b['clock_in'].toString()) : DateTime(1970);
+      final aIn = parseAppDateTime(a['clock_in']) ?? DateTime(1970);
+      final bIn = parseAppDateTime(b['clock_in']) ?? DateTime(1970);
       return aIn.compareTo(bIn);
     });
 
@@ -1194,6 +1433,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     // 3. Check if leave record exists in PostgreSQL
     Map<String, dynamic>? leave;
     for (var l in _userLeaves) {
+      final st = (l['status'] ?? '').toString().toLowerCase();
+      if (st.contains('withdrawn') || st.contains('cancelled') || st.contains('rejected')) continue;
       if (l['start_date'] != null) {
         final sStr = l['start_date'].toString().split('T')[0];
         final eStr = (l['end_date'] ?? l['start_date']).toString().split('T')[0];
@@ -1214,8 +1455,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
       final firstShift = dayShifts.first;
       final lastShift = dayShifts.last;
 
-      final firstCi = firstShift['clock_in'] != null ? DateTime.parse(firstShift['clock_in'].toString()) : null;
-      final lastCo = lastShift['clock_out'] != null ? DateTime.parse(lastShift['clock_out'].toString()) : null;
+      final firstCi = parseAppDateTime(firstShift['clock_in']);
+      final lastCo = parseAppDateTime(lastShift['clock_out']);
 
       final ciStr = firstCi != null ? DateFormat('hh:mm').format(firstCi) : '-- : --';
       final ciAmpm = firstCi != null ? DateFormat('a').format(firstCi) : '';
@@ -1227,10 +1468,22 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
       bool hasSession1 = false;
       bool hasSession2 = false;
 
+      final now = DateTime.now();
+      final isToday = dt.year == now.year && dt.month == now.month && dt.day == now.day;
+      final bool hasActiveShift = dayShifts.any((s) => s['clock_out'] == null);
+      final bool isShiftActive = hasActiveShift || (isToday && lastCo == null);
+
       for (var s in dayShifts) {
-        totalMinsAllShifts += (s['total_minutes'] as int? ?? 0);
-        final ci = s['clock_in'] != null ? DateTime.tryParse(s['clock_in'].toString()) : null;
-        final co = s['clock_out'] != null ? DateTime.tryParse(s['clock_out'].toString()) : null;
+        final ci = parseAppDateTime(s['clock_in']);
+        final co = parseAppDateTime(s['clock_out']);
+        if (s['total_minutes'] != null && s['total_minutes'] > 0) {
+          totalMinsAllShifts += (s['total_minutes'] as int);
+        } else if (ci != null && co != null) {
+          totalMinsAllShifts += co.difference(ci).inMinutes;
+        } else if (ci != null && co == null) {
+          final elapsed = now.difference(ci).inMinutes;
+          if (elapsed > 0) totalMinsAllShifts += elapsed;
+        }
         if (ci != null) {
           if (ci.hour < 13 || (ci.hour == 13 && ci.minute <= 30)) hasSession1 = true;
           if (ci.hour > 13 || (ci.hour == 13 && ci.minute > 30)) hasSession2 = true;
@@ -1238,7 +1491,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
         if (co != null && co.hour >= 17) hasSession2 = true;
       }
 
-      final isHalfDay = !isOffDay && ((hasSession1 && !hasSession2) || (!hasSession1 && hasSession2) || (totalMinsAllShifts > 0 && totalMinsAllShifts < 540));
+      // Half day should ONLY be flagged when shift has finished (user clocked out) and worked less than standard 9 hours (540 mins)
+      final isHalfDay = !isOffDay && !isShiftActive && lastCo != null && ((hasSession1 && !hasSession2) || (!hasSession1 && hasSession2) || (totalMinsAllShifts > 0 && totalMinsAllShifts < 540));
 
       final hrsStr = '${(totalMinsAllShifts ~/ 60).toString().padLeft(2, '0')}:${(totalMinsAllShifts % 60).toString().padLeft(2, '0')}';
       final otMins = totalMinsAllShifts > 540 ? (totalMinsAllShifts - 540) : 0;
@@ -1257,7 +1511,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             children: [
               IconButton(
                 icon: Icon(Icons.arrow_back_rounded, color: textPrimary),
-                onPressed: () => setState(() => _viewingDetailDay = null),
+                onPressed: () => setState(() => _viewingDetailDate = null),
               ),
               Text('Back to Calendar', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textPrimary)),
             ],
@@ -1300,7 +1554,27 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    if (isHalfDay)
+                    if (isShiftActive)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: isDark ? const Color(0xFF34D399) : const Color(0xFF22C55E)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFF22C55E), shape: BoxShape.circle)),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Shift Active',
+                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D)),
+                            ),
+                          ],
+                        ),
+                      )
+                    else if (isHalfDay)
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                         decoration: BoxDecoration(
@@ -1459,12 +1733,27 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                             const SizedBox(height: 6),
                             Row(
                               children: [
-                                Icon(totalMinsAllShifts >= 540 ? Icons.check_rounded : Icons.info_outline_rounded,
-                                    size: 12, color: totalMinsAllShifts >= 540 ? const Color(0xFF146C43) : textSecondary),
+                                Icon(
+                                  isShiftActive
+                                      ? Icons.timelapse_rounded
+                                      : (totalMinsAllShifts >= 540 ? Icons.check_rounded : Icons.info_outline_rounded),
+                                  size: 12,
+                                  color: isShiftActive
+                                      ? const Color(0xFF16A34A)
+                                      : (totalMinsAllShifts >= 540 ? const Color(0xFF146C43) : textSecondary),
+                                ),
                                 const SizedBox(width: 4),
                                 Text(
-                                  totalMinsAllShifts >= 540 ? 'Standard hours met' : (isHalfDay ? 'Half day logged' : 'Shift in progress'),
-                                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: totalMinsAllShifts >= 540 ? const Color(0xFF146C43) : textSecondary),
+                                  isShiftActive
+                                      ? 'Shift in progress'
+                                      : (totalMinsAllShifts >= 540 ? 'Standard hours met' : (isHalfDay ? 'Half day logged' : 'Shift in progress')),
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    color: isShiftActive
+                                        ? const Color(0xFF16A34A)
+                                        : (totalMinsAllShifts >= 540 ? const Color(0xFF146C43) : textSecondary),
+                                  ),
                                 ),
                               ],
                             ),
@@ -1578,8 +1867,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                 // Multi-shift timeline entries from DB
                 ...List.generate(dayShifts.length, (sIdx) {
                   final s = dayShifts[sIdx];
-                  final sIn = s['clock_in'] != null ? DateTime.parse(s['clock_in'].toString()) : null;
-                  final sOut = s['clock_out'] != null ? DateTime.parse(s['clock_out'].toString()) : null;
+                  final sIn = parseAppDateTime(s['clock_in']);
+                  final sOut = parseAppDateTime(s['clock_out']);
 
                   final inTimeStr = sIn != null ? DateFormat('hh:mm').format(sIn) : '-- : --';
                   final inAmpmStr = sIn != null ? DateFormat('a').format(sIn) : '';
@@ -1641,7 +1930,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             children: [
               IconButton(
                 icon: Icon(Icons.arrow_back_rounded, color: textPrimary),
-                onPressed: () => setState(() => _viewingDetailDay = null),
+                onPressed: () => setState(() => _viewingDetailDate = null),
               ),
               Text('Back to Calendar', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textPrimary)),
             ],
@@ -1703,7 +1992,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             children: [
               IconButton(
                 icon: Icon(Icons.arrow_back_rounded, color: textPrimary),
-                onPressed: () => setState(() => _viewingDetailDay = null),
+                onPressed: () => setState(() => _viewingDetailDate = null),
               ),
               Text('Back to Calendar', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textPrimary)),
             ],
@@ -1804,30 +2093,55 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   ),
                 ),
 
-                const SizedBox(height: 16),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      _showApplyLeaveModal(
-                        context,
-                        initialDate: dt,
-                        initialToDate: dt,
-                        initialFromSession: 'Session 1',
-                        initialToSession: 'Session 2',
-                        isDark: isDark,
-                      );
-                    },
-                    icon: const Icon(Icons.add_rounded, size: 16),
-                    label: const Text('Apply Additional Leave', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
-                    style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: borderCol),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                    ),
+                if (lStatus.toLowerCase() == 'pending review') ...[
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => _confirmWithdrawLeave(leave!, isDark),
+                          icon: const Icon(Icons.undo_rounded, size: 16, color: Color(0xFFEA580C)),
+                          label: const Text('Withdraw Leave', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12, color: Color(0xFFEA580C))),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Color(0xFFEA580C)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            final sDate = leave!['start_date'] != null
+                                ? (DateTime.tryParse(leave['start_date'].toString().split('T')[0]) ?? dt)
+                                : dt;
+                            final eDate = leave['end_date'] != null
+                                ? (DateTime.tryParse(leave['end_date'].toString().split('T')[0]) ?? sDate)
+                                : sDate;
+                            _showApplyLeaveModal(
+                              context,
+                              initialDate: sDate,
+                              initialToDate: eDate,
+                              initialType: leave['leave_type'] ?? 'Earned Leave',
+                              initialTitle: leave['title'],
+                              initialNote: leave['note'],
+                              editingLeave: leave,
+                              isDark: isDark,
+                            );
+                          },
+                          icon: const Icon(Icons.edit_outlined, size: 16, color: Color(0xFF3B82F6)),
+                          label: const Text('Edit Leave', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12, color: Color(0xFF3B82F6))),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Color(0xFF3B82F6)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -1844,7 +2158,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             children: [
               IconButton(
                 icon: Icon(Icons.arrow_back_rounded, color: textPrimary),
-                onPressed: () => setState(() => _viewingDetailDay = null),
+                onPressed: () => setState(() => _viewingDetailDate = null),
               ),
               Text('Back to Calendar', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textPrimary)),
             ],
@@ -1896,7 +2210,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
           children: [
             IconButton(
               icon: Icon(Icons.arrow_back_rounded, color: textPrimary),
-              onPressed: () => setState(() => _viewingDetailDay = null),
+              onPressed: () => setState(() => _viewingDetailDate = null),
             ),
             Text('Back to Calendar', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textPrimary)),
           ],
@@ -1961,6 +2275,75 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     );
   }
 
+  Future<void> _confirmWithdrawLeave(Map<String, dynamic> leave, bool isDark) async {
+    final leaveId = leave['id'];
+    final title = leave['title'] ?? 'Leave Request';
+    final sStr = leave['start_date'] != null ? DateFormat('d MMM yyyy').format(DateTime.parse(leave['start_date'].toString().split('T')[0])) : '';
+    final eStr = leave['end_date'] != null ? DateFormat('d MMM yyyy').format(DateTime.parse(leave['end_date'].toString().split('T')[0])) : sStr;
+    final dateRangeStr = sStr == eStr ? sStr : '$sStr - $eStr';
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1B202D) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.undo_rounded, color: Color(0xFFEA580C)),
+            SizedBox(width: 8),
+            Text('Withdraw Leave', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+          ],
+        ),
+        content: Text(
+          'Are you sure you want to withdraw your $title for $dateRangeStr?\n\nThis will cancel your leave request and restore your balance.',
+          style: const TextStyle(fontSize: 13, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEA580C),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Withdraw', style: TextStyle(fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        final res = await apiPost('/api/leaves/$leaveId/withdraw', {}, token: widget.token);
+        if (res['error'] != null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error: ${res['error']}')),
+            );
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Leave request withdrawn successfully!')),
+            );
+            setState(() => _viewingDetailDate = null);
+            _loadData();
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to withdraw leave: $e')),
+          );
+        }
+      }
+    }
+  }
+
   void _showApplyLeaveModal(
     BuildContext context, {
     required DateTime initialDate,
@@ -1968,8 +2351,12 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     String initialFromSession = 'Session 1',
     String initialToSession = 'Session 2',
     String initialType = 'Earned Leave',
+    String? initialTitle,
+    String? initialNote,
+    Map<String, dynamic>? editingLeave,
     required bool isDark,
   }) {
+    final bool isEditing = editingLeave != null;
     final dialogBg = isDark ? const Color(0xFF131722) : Colors.white;
     final textPrimary = isDark ? Colors.white : const Color(0xFF171C23);
     final textSecondary = isDark ? const Color(0xFF9CA3AF) : const Color(0xFF524437);
@@ -1983,8 +2370,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     String selectedLeaveType = initialType; // 'Earned Leave', 'Loss Of Pay', 'Comp - Off'
     bool submitting = false;
 
-    _leaveTitleCtrl.clear();
-    _leaveNoteCtrl.clear();
+    _leaveTitleCtrl.text = initialTitle ?? (isEditing ? (editingLeave['title'] ?? '') : '');
+    _leaveNoteCtrl.text = initialNote ?? (isEditing ? (editingLeave['note'] ?? '') : '');
 
     double calculateDays(DateTime fDate, String fSess, DateTime tDate, String tSess) {
       final fNorm = DateTime(fDate.year, fDate.month, fDate.day);
@@ -2057,9 +2444,9 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Apply Leave',
+                          Text(isEditing ? 'Edit Leave' : 'Apply Leave',
                               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: textPrimary)),
-                          Text('Submit your leave request with session details',
+                          Text(isEditing ? 'Update your leave request details' : 'Submit your leave request with session details',
                               style: TextStyle(fontSize: 12, color: textSecondary)),
                         ],
                       ),
@@ -2459,20 +2846,21 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                                   final navigator = Navigator.of(ctx);
                                   setModalState(() => submitting = true);
                                   try {
-                                    final res = await apiPost(
-                                      '/api/leaves',
-                                      {
-                                        'title': _leaveTitleCtrl.text.trim().isEmpty ? selectedLeaveType : _leaveTitleCtrl.text.trim(),
-                                        'leave_type': selectedLeaveType,
-                                        'start_date': DateFormat('yyyy-MM-dd').format(fromDate),
-                                        'end_date': DateFormat('yyyy-MM-dd').format(toDate),
-                                        'from_session': fromSession,
-                                        'to_session': toSession,
-                                        'days_count': calculatedDays,
-                                        'note': _leaveNoteCtrl.text.trim(),
-                                      },
-                                      token: widget.token,
-                                    );
+                                    final payload = {
+                                      'title': _leaveTitleCtrl.text.trim().isEmpty ? selectedLeaveType : _leaveTitleCtrl.text.trim(),
+                                      'leave_type': selectedLeaveType,
+                                      'start_date': DateFormat('yyyy-MM-dd').format(fromDate),
+                                      'end_date': DateFormat('yyyy-MM-dd').format(toDate),
+                                      'from_session': fromSession,
+                                      'to_session': toSession,
+                                      'days_count': calculatedDays,
+                                      'note': _leaveNoteCtrl.text.trim(),
+                                    };
+
+                                    final res = isEditing
+                                        ? await apiPut('/api/leaves/${editingLeave['id']}', payload, token: widget.token)
+                                        : await apiPost('/api/leaves', payload, token: widget.token);
+
                                     if (res['error'] != null) {
                                       messenger.showSnackBar(
                                         SnackBar(content: Text('Error: ${res['error']}')),
@@ -2482,7 +2870,9 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                                       _loadData();
                                       messenger.showSnackBar(
                                         SnackBar(
-                                          content: Text('$selectedLeaveType request ($daysStr ${calculatedDays == 1.0 || calculatedDays == 0.5 ? 'Day' : 'Days'}) submitted!'),
+                                          content: Text(isEditing
+                                              ? 'Leave application updated ($daysStr ${calculatedDays == 1.0 || calculatedDays == 0.5 ? 'Day' : 'Days'})!'
+                                              : '$selectedLeaveType request ($daysStr ${calculatedDays == 1.0 || calculatedDays == 0.5 ? 'Day' : 'Days'}) submitted!'),
                                         ),
                                       );
                                     }
@@ -2505,12 +2895,12 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                                   height: 20,
                                   child: CircularProgressIndicator(strokeWidth: 2, color: amberDark),
                                 )
-                              : const Row(
+                              : Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Icon(Icons.send_rounded, size: 16),
-                                    SizedBox(width: 6),
-                                    Text('Submit Request', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                                    Icon(isEditing ? Icons.check_circle_outline_rounded : Icons.send_rounded, size: 16),
+                                    const SizedBox(width: 6),
+                                    Text(isEditing ? 'Save Changes' : 'Submit Request', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
                                   ],
                                 ),
                         ),
@@ -2596,144 +2986,209 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     );
   }
 
-  // ── Overview View ───────────────────────────────────────────────────────────
+  // ── Overview View (26th to 25th Company Cycle) ──────────────────────────────
   Widget _buildOverviewView(Color bgCard, Color borderCol, Color textPrimary, Color textSecondary, bool isDark, Set<String> holidayDates) {
-    final now = DateTime.now();
-    final totalDaysInMonth = DateTime(now.year, now.month + 1, 0).day;
+    final cycleDays = _cycleDays;
+    final startDate = _cycleStartDate;
+    final endDate = _cycleEndDate;
 
-    int presentDays = 0;
-    int holidayCountInMonth = 0;
-    int totalMinutesWorked = 0;
-
-    final Set<int> presentDaySet = {};
-
-    for (var r in _attendanceRecords) {
-      final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
-      final mins = r['total_minutes'] as int? ?? 0;
-
-      if (ci != null && ci.month == now.month && ci.year == now.year) {
-        if (mins >= 540) {
-          presentDaySet.add(ci.day);
-          totalMinutesWorked += mins;
+    // 1. Map approved leaves for user
+    final Map<String, Map<String, dynamic>> approvedLeavesMap = {};
+    for (var l in _userLeaves) {
+      final st = (l['status'] ?? '').toString().trim().toLowerCase();
+      if (st != 'approved') continue;
+      if (l['start_date'] != null) {
+        final sStr = l['start_date'].toString().split('T')[0];
+        final eStr = (l['end_date'] ?? l['start_date']).toString().split('T')[0];
+        try {
+          var s = DateTime.parse(sStr);
+          var e = DateTime.parse(eStr);
+          while (!s.isAfter(e)) {
+            approvedLeavesMap[DateFormat('yyyy-MM-dd').format(s)] = Map<String, dynamic>.from(l);
+            s = s.add(const Duration(days: 1));
+          }
+        } catch (_) {
+          approvedLeavesMap[sStr] = Map<String, dynamic>.from(l);
         }
       }
     }
 
-    presentDays = presentDaySet.length;
-
-    int workingDaysCount = 0;
-    for (int day = 1; day <= totalDaysInMonth; day++) {
-      final dt = DateTime(now.year, now.month, day);
-      final dateKey = DateFormat('yyyy-MM-dd').format(dt);
-
-      final isSunday = dt.weekday == DateTime.sunday;
-      final isEvenSaturday = dt.weekday == DateTime.saturday && (((dt.day - 1) ~/ 7) + 1) % 2 == 0;
-
-      if (holidayDates.contains(dateKey)) {
-        holidayCountInMonth++;
-      } else if (!isSunday && !isEvenSaturday) {
-        workingDaysCount++;
+    // 2. Map attendance shifts by date
+    final Map<String, int> dailyMinutesMap = {};
+    for (var r in _attendanceRecords) {
+      final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
+      final d = r['date'] != null ? DateTime.tryParse(r['date'].toString()) : ci;
+      final mins = (r['total_minutes'] is num) ? (r['total_minutes'] as num).toInt() : 0;
+      if (d != null) {
+        final dKey = DateFormat('yyyy-MM-dd').format(d);
+        dailyMinutesMap[dKey] = (dailyMinutesMap[dKey] ?? 0) + mins;
       }
     }
 
-    double attendancePercentage = workingDaysCount > 0
-        ? (presentDays / workingDaysCount) * 100
-        : 98.0;
+    final now = DateTime.now();
+    final todayMidnight = DateTime(now.year, now.month, now.day);
+    final joinDate = _getJoiningDate();
+    final joinDateMidnight = joinDate != null ? DateTime(joinDate.year, joinDate.month, joinDate.day) : null;
 
-    double avgHours = presentDays > 0 ? (totalMinutesWorked / 60) / presentDays : 8.5;
-    int avgH = avgHours.floor();
-    int avgM = ((avgHours - avgH) * 60).round();
-    String avgTimeString = '${avgH.toString().padLeft(2, '0')}:${avgM.toString().padLeft(2, '0')}';
+    int presentCount = 0;
+    int absentCount = 0;
+    int holidayCount = 0;
+    int leaveCount = 0;
+    int restDayCount = 0;
+    int workingDaysCount = 0;
+    int totalMinutesWorked = 0;
+
+    for (var dt in cycleDays) {
+      final dtMidnight = DateTime(dt.year, dt.month, dt.day);
+      if (joinDateMidnight != null && dtMidnight.isBefore(joinDateMidnight)) {
+        continue;
+      }
+
+      final dateKey = DateFormat('yyyy-MM-dd').format(dt);
+      final isHoliday = holidayDates.contains(dateKey);
+      final isSunday = dt.weekday == DateTime.sunday;
+      final satIndex = ((dt.day - 1) ~/ 7) + 1;
+      final isEvenSaturday = dt.weekday == DateTime.saturday && satIndex % 2 == 0;
+      final isRestDay = isSunday || isEvenSaturday;
+      final isLeave = approvedLeavesMap.containsKey(dateKey);
+      final minsWorked = dailyMinutesMap[dateKey] ?? 0;
+      final isPast = dtMidnight.isBefore(todayMidnight);
+      final isToday = dtMidnight.isAtSameMomentAs(todayMidnight);
+
+      if (isHoliday) {
+        holidayCount++;
+      } else if (isRestDay) {
+        restDayCount++;
+      } else {
+        workingDaysCount++;
+        if (isLeave) {
+          leaveCount++;
+        } else if (minsWorked >= 240) {
+          presentCount++;
+          totalMinutesWorked += minsWorked;
+        } else if (isToday) {
+          if (minsWorked > 0) {
+            presentCount++;
+            totalMinutesWorked += minsWorked;
+          }
+        } else if (isPast) {
+          absentCount++;
+        }
+      }
+    }
+
+
+    final double avgHours = presentCount > 0 ? (totalMinutesWorked / 60) / presentCount : 8.5;
+    final int avgH = avgHours.floor();
+    final int avgM = ((avgHours - avgH) * 60).round();
+    final String avgTimeString = '${avgH.toString().padLeft(2, '0')}:${avgM.toString().padLeft(2, '0')}';
+
+    final donutSegments = [
+      DonutSegment(value: presentCount.toDouble(), color: const Color(0xFF5DBE68), label: 'Present'),
+      DonutSegment(value: absentCount.toDouble(), color: const Color(0xFFF76B6B), label: 'Absent'),
+      DonutSegment(value: holidayCount.toDouble(), color: const Color(0xFF38B9C8), label: 'Holiday'),
+      DonutSegment(value: leaveCount.toDouble(), color: const Color(0xFFFB7185), label: 'Leave'),
+      DonutSegment(value: restDayCount.toDouble(), color: const Color(0xFF98ABBE), label: 'Rest Day'),
+    ];
 
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
       decoration: BoxDecoration(
         color: bgCard,
         borderRadius: BorderRadius.circular(24),
         border: Border.all(color: borderCol),
+        boxShadow: isDark
+            ? []
+            : [
+                BoxShadow(
+                  color: Colors.black.withAlpha(8),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                )
+              ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Header: Summary range & working days count
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
             children: [
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Monthly Attendance',
-                      style: TextStyle(color: textSecondary, fontSize: 11, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 2),
-                  Text(DateFormat('MMMM y').format(now),
+                  Text('Summary',
+                      style: TextStyle(color: textSecondary, fontSize: 12, fontWeight: FontWeight.w500)),
+                  const SizedBox(height: 3),
+                  Text('${DateFormat('d MMM').format(startDate)} - ${DateFormat('d MMM').format(endDate)}',
                       style: TextStyle(color: textPrimary, fontWeight: FontWeight.w800, fontSize: 16)),
                 ],
               ),
               Text('$workingDaysCount Working days',
-                  style: TextStyle(color: textSecondary, fontSize: 12, fontWeight: FontWeight.w600)),
+                  style: TextStyle(color: textSecondary, fontSize: 13, fontWeight: FontWeight.w600)),
             ],
           ),
           const SizedBox(height: 24),
 
+          // Multi-Segment Donut Chart
           Center(
             child: SizedBox(
-              width: 150,
-              height: 150,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  CustomPaint(
-                    size: const Size(150, 150),
-                    painter: DynamicPercentagePainter(
-                      percentage: attendancePercentage,
-                      isDark: isDark,
-                    ),
-                  ),
-                  Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        '${attendancePercentage.toStringAsFixed(1)}%',
-                        style: TextStyle(
-                            fontSize: 24, fontWeight: FontWeight.w800, color: textPrimary),
-                      ),
-                      Text(
-                        'Attendance',
-                        style: TextStyle(fontSize: 10, color: textSecondary, fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
-                ],
+              width: 170,
+              height: 170,
+              child: CustomPaint(
+                size: const Size(170, 170),
+                painter: MultiSegmentDonutPainter(
+                  segments: donutSegments,
+                  isDark: isDark,
+                  strokeWidth: 26,
+                ),
               ),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 28),
 
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            childAspectRatio: 2.8,
-            children: [
-              _statItem('Present (>=9h)', '$presentDays days', const Color(0xFF10B981), textSecondary, textPrimary),
-              _statItem('Holidays', '$holidayCountInMonth days', const Color(0xFF0EA5E9), textSecondary, textPrimary),
-            ],
-          ),
-          Divider(color: borderCol, height: 24),
-
+          // Statistics Grid (Row 1: Present, Absent, Holiday | Row 2: Leave, Rest Day)
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(child: _statPillItem('Present', presentCount, const Color(0xFF5DBE68), textSecondary, textPrimary)),
+              Expanded(child: _statPillItem('Absent', absentCount, const Color(0xFFF76B6B), textSecondary, textPrimary)),
+              Expanded(child: _statPillItem('Holiday', holidayCount, const Color(0xFF38B9C8), textSecondary, textPrimary)),
+            ],
+          ),
+          const SizedBox(height: 18),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(child: _statPillItem('Leave', leaveCount, const Color(0xFFFB7185), textSecondary, textPrimary)),
+              Expanded(child: _statPillItem('Rest Day', restDayCount, const Color(0xFF98ABBE), textSecondary, textPrimary)),
+              const Expanded(child: SizedBox()), // Spacer to align grid
+            ],
+          ),
+          const SizedBox(height: 20),
+          Divider(color: borderCol.withAlpha(80), height: 1),
+          const SizedBox(height: 16),
+
+          // Average Work Hours Footer
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Average Work Hours', style: TextStyle(color: textSecondary, fontSize: 11)),
-                  const SizedBox(height: 4),
+                  Text('Average Work Hours', style: TextStyle(color: textSecondary, fontSize: 11, fontWeight: FontWeight.w500)),
+                  const SizedBox(height: 3),
                   Text(avgTimeString,
-                      style: TextStyle(color: textPrimary, fontSize: 18, fontWeight: FontWeight.w800)),
+                      style: TextStyle(color: textPrimary, fontSize: 19, fontWeight: FontWeight.w800)),
                 ],
               ),
-              const Text('Calculated from DB',
-                  style: TextStyle(color: Color(0xFF10B981), fontSize: 12, fontWeight: FontWeight.w600)),
+              Text(
+                '+0% From ${DateFormat('MMM').format(startDate.subtract(const Duration(days: 15)))}',
+                style: const TextStyle(color: Color(0xFF22C55E), fontSize: 12, fontWeight: FontWeight.w700),
+              ),
             ],
           ),
         ],
@@ -2741,21 +3196,27 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     );
   }
 
-  Widget _statItem(String label, String value, Color color, Color textSecondary, Color textPrimary) {
+  Widget _statPillItem(String label, int count, Color color, Color textSecondary, Color textPrimary) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Container(width: 10, height: 4, decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(2))),
-            const SizedBox(width: 6),
-            Text(label, style: TextStyle(color: textSecondary, fontSize: 12)),
-          ],
+        Container(
+          width: 24,
+          height: 4,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(2),
+          ),
         ),
-        const SizedBox(height: 2),
-        Padding(
-          padding: const EdgeInsets.only(left: 16),
-          child: Text(value, style: TextStyle(color: textPrimary, fontWeight: FontWeight.w700, fontSize: 14)),
+        const SizedBox(height: 6),
+        Text(
+          label,
+          style: TextStyle(color: textSecondary, fontSize: 12, fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          count.toString().padLeft(2, '0'),
+          style: TextStyle(color: textPrimary, fontWeight: FontWeight.w800, fontSize: 18),
         ),
       ],
     );
@@ -3005,12 +3466,16 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             children: [
               Icon(Icons.verified_rounded, size: 12, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
               const SizedBox(width: 4),
-              Text(
-                '🏢 In-Office Verified • $bldg (≤ 20m)',
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
+              Flexible(
+                child: Text(
+                  '🏢 In-Office Verified • $bldg (≤ 20m)',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
+                  ),
                 ),
               ),
             ],
@@ -3028,19 +3493,23 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             children: [
               Icon(Icons.check_circle_rounded, size: 12, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
               const SizedBox(width: 4),
-              Text(
-                '✅ Approved by ${s['reviewed_by'] ?? 'Supervisor'} (${dist ?? ''}m from $bldg)',
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
+              Flexible(
+                child: Text(
+                  '✅ Approved by ${s['reviewed_by'] ?? 'Supervisor'} (${dist != null ? '${dist}m' : ''} from $bldg)',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
+                  ),
                 ),
               ),
             ],
           ),
         );
       }
-    } else if (status == 'Pending Approval') {
+    } else if (status == 'Pending TL Approval' || status == 'Pending Approval') {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
@@ -3052,12 +3521,43 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
           children: [
             Icon(Icons.schedule_rounded, size: 12, color: isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706)),
             const SizedBox(width: 4),
-            Text(
-              '⚠️ Out of Range (${dist ?? ''}m from $bldg) • Pending Approval',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                color: isDark ? const Color(0xFFF5A952) : const Color(0xFFB45309),
+            Flexible(
+              child: Text(
+                '⚠️ Out of Range (${dist != null ? '${dist}m' : '>20m'} from $bldg) • Waiting for TL Approval',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? const Color(0xFFF5A952) : const Color(0xFFB45309),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    } else if (status == 'Pending Manager Approval') {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.how_to_reg_rounded, size: 12, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                '⚠️ Out of Range • TL Approved • Waiting for Manager Approval',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
+                ),
               ),
             ),
           ],
@@ -3075,12 +3575,16 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
           children: [
             Icon(Icons.cancel_rounded, size: 12, color: isDark ? const Color(0xFFF87171) : const Color(0xFFE11D48)),
             const SizedBox(width: 4),
-            Text(
-              '❌ Rejected by ${s['reviewed_by'] ?? 'Supervisor'}${s['rejection_reason'] != null && s['rejection_reason'].toString().isNotEmpty ? ' (${s['rejection_reason']})' : ''}',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                color: isDark ? const Color(0xFFF87171) : const Color(0xFFBE123C),
+            Flexible(
+              child: Text(
+                '❌ Rejected by ${s['reviewed_by'] ?? 'Supervisor'}${s['rejection_reason'] != null && s['rejection_reason'].toString().isNotEmpty ? ' (${s['rejection_reason']})' : ''}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? const Color(0xFFF87171) : const Color(0xFFBE123C),
+                ),
               ),
             ),
           ],
@@ -3142,7 +3646,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                           style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: textPrimary),
                         ),
                         Text(
-                          'Punches logged > 20m from company centers require your approval',
+                          'Punches logged > 20m from company centers require 2-Level verification (TL → Manager)',
                           style: TextStyle(fontSize: 11, color: textSecondary),
                         ),
                       ],
@@ -3228,6 +3732,11 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             final dist = p['distance_meters'];
             final loc = p['location'] ?? 'GPS Coordinates';
             final reqId = p['id'];
+            final approvalStatus = (p['approval_status'] ?? 'Pending Approval').toString();
+            final isPendingTL = approvalStatus == 'Pending TL Approval' || approvalStatus == 'Pending Approval';
+            final isPendingManager = approvalStatus == 'Pending Manager Approval';
+            final isManager = _isManager;
+            final reviewedBy = p['reviewed_by'] ?? '';
 
             return Container(
               margin: const EdgeInsets.only(bottom: 12),
@@ -3235,7 +3744,12 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
               decoration: BoxDecoration(
                 color: bgCard,
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: isDark ? const Color(0xFF3E2D1A) : const Color(0xFFFFA276), width: 1.5),
+                border: Border.all(
+                  color: isPendingManager
+                      ? (isDark ? const Color(0xFF1E3A8A) : const Color(0xFF93C5FD))
+                      : (isDark ? const Color(0xFF3E2D1A) : const Color(0xFFFFA276)),
+                  width: 1.5,
+                ),
                 boxShadow: const [
                   BoxShadow(
                     color: Color(0x08171C23),
@@ -3292,24 +3806,62 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
                   const SizedBox(height: 12),
 
-                  // Distance & Warning Alert Banner
+                  // Distance & Approval Stage Banner
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: isDark ? const Color(0xFF261D12) : const Color(0xFFFFFBEB),
+                      color: isPendingManager
+                          ? (isDark ? const Color(0xFF0F172A) : const Color(0xFFEFF6FF))
+                          : (isDark ? const Color(0xFF261D12) : const Color(0xFFFFFBEB)),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: isDark ? const Color(0xFF3E2D1A) : const Color(0xFFFDE68A)),
+                      border: Border.all(
+                        color: isPendingManager
+                            ? (isDark ? const Color(0xFF1E3A8A) : const Color(0xFFBFDBFE))
+                            : (isDark ? const Color(0xFF3E2D1A) : const Color(0xFFFDE68A)),
+                      ),
                     ),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.location_off_rounded, size: 16, color: isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706)),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            '⚠️ Out of Range: ${dist != null ? '${dist}m' : '> 20m'} away from $bldg',
-                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: isDark ? const Color(0xFFF5A952) : const Color(0xFFB45309)),
-                          ),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.location_off_rounded,
+                              size: 16,
+                              color: isPendingManager
+                                  ? (isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB))
+                                  : (isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706)),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '⚠️ Out of Range: ${dist != null ? '${dist}m' : '> 20m'} away from $bldg',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: isPendingManager
+                                      ? (isDark ? const Color(0xFF93C5FD) : const Color(0xFF1D4ED8))
+                                      : (isDark ? const Color(0xFFF5A952) : const Color(0xFFB45309)),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
+                        if (isPendingManager && reviewedBy.toString().isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              const Icon(Icons.check_circle_outline_rounded, size: 13, color: Color(0xFF10B981)),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  'Approved by $reviewedBy • Ready for Manager Approval',
+                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Color(0xFF10B981)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -3340,44 +3892,75 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
                   const SizedBox(height: 14),
 
-                  // Actions Row
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: _actionInProgress ? null : () => _showRejectPunchDialog(p),
-                          icon: const Icon(Icons.close_rounded, size: 16, color: Color(0xFFDC2626)),
-                          label: const Text('Reject', style: TextStyle(color: Color(0xFFDC2626), fontWeight: FontWeight.w700, fontSize: 12)),
-                          style: OutlinedButton.styleFrom(
-                            side: const BorderSide(color: Color(0xFFFCA5A5)),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            padding: const EdgeInsets.symmetric(vertical: 10),
+                  // Actions Row: Manager vs Team Leader
+                  if (isManager && isPendingTL) ...[
+                    // Manager sees that it is waiting for Team Leader
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF1B2130) : const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: isDark ? const Color(0xFF2E384D) : const Color(0xFFCBD5E1)),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.hourglass_top_rounded, size: 15, color: isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706)),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Waiting for Team Leader to approve',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: isDark ? const Color(0xFFF5A952) : const Color(0xFFB45309),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ] else ...[
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _actionInProgress ? null : () => _showRejectPunchDialog(p),
+                            icon: const Icon(Icons.close_rounded, size: 16, color: Color(0xFFDC2626)),
+                            label: const Text('Reject', style: TextStyle(color: Color(0xFFDC2626), fontWeight: FontWeight.w700, fontSize: 12)),
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: Color(0xFFFCA5A5)),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _actionInProgress
-                              ? null
-                              : () {
-                                  if (reqId != null) {
-                                    final idInt = reqId is int ? reqId : int.tryParse(reqId.toString()) ?? 0;
-                                    _actionPunchRequest(idInt, 'approve');
-                                  }
-                                },
-                          icon: const Icon(Icons.check_rounded, size: 16, color: Colors.white),
-                          label: const Text('Approve Punch', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF16A34A),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            padding: const EdgeInsets.symmetric(vertical: 10),
-                            elevation: 0,
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _actionInProgress
+                                ? null
+                                : () {
+                                    if (reqId != null) {
+                                      final idInt = reqId is int ? reqId : int.tryParse(reqId.toString()) ?? 0;
+                                      _actionPunchRequest(idInt, 'approve');
+                                    }
+                                  },
+                            icon: const Icon(Icons.check_rounded, size: 16, color: Colors.white),
+                            label: Text(
+                              isManager ? 'Final Approve' : 'Approve Punch',
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF16A34A),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              elevation: 0,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             );

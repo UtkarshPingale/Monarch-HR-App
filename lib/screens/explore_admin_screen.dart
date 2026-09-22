@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../config/api_config.dart';
 import '../controllers/theme_controller.dart';
+import '../services/date_time_helper.dart';
 import '../widgets/profile_avatar_badge.dart';
 
 // ── Tab 3: MonarchHR Leave Management & Admin Dashboard for SUMIT ──────────────
@@ -22,10 +24,10 @@ class ExploreTab extends StatefulWidget {
   });
 
   @override
-  State<ExploreTab> createState() => _ExploreTabState();
+  State<ExploreTab> createState() => ExploreTabState();
 }
 
-class _ExploreTabState extends State<ExploreTab> {
+class ExploreTabState extends State<ExploreTab> {
   List<dynamic> _usersList = [];
   List<dynamic> _leavesList = [];
   List<dynamic> _holidaysList = [];
@@ -44,6 +46,8 @@ class _ExploreTabState extends State<ExploreTab> {
   String _teamSubFilter = 'All'; // 'All', 'Pending', 'Approved', 'Rejected'
   String _teamAttendanceDeptFilter = 'All';
   String _teamAttendanceRoleFilter = 'All'; // 'All', 'Team Leader', 'Employee'
+  Timer? _autoSyncTimer;
+  double _leavesDragDeltaX = 0;
 
   bool get _isManager {
     final r = (widget.user['role'] ?? '').toString().toLowerCase();
@@ -81,6 +85,14 @@ class _ExploreTabState extends State<ExploreTab> {
     if (_isPrivileged) {
       _fetchTeamData();
     }
+    _autoSyncTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (mounted) {
+        _fetchLeaves();
+        if (_isPrivileged) {
+          _fetchTeamData();
+        }
+      }
+    });
   }
 
   @override
@@ -91,7 +103,19 @@ class _ExploreTabState extends State<ExploreTab> {
     _holidayDayCtrl.dispose();
     _leaveTitleCtrl.dispose();
     _leaveNoteCtrl.dispose();
+    _autoSyncTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> refreshData() async {
+    try {
+      await Future.wait([
+        _fetchLeaves(),
+        _fetchHolidays(),
+        if (widget.user['role'] == 'admin') _fetchAdminUsers(),
+        if (_isPrivileged) _fetchTeamData(),
+      ]);
+    } catch (_) {}
   }
 
   void _onThemeChanged() {
@@ -301,7 +325,76 @@ class _ExploreTabState extends State<ExploreTab> {
     );
   }
 
-  void _showApplyLeaveModal(bool isDark) {
+  Future<void> _confirmWithdrawLeave(Map<String, dynamic> req, bool isDark) async {
+    final leaveId = req['id'];
+    final title = req['title'] ?? 'Leave Request';
+    final startDate = req['start_date'] != null ? DateFormat('d MMM yyyy').format(DateTime.parse(req['start_date'].toString().split('T')[0])) : '';
+    final endDate = req['end_date'] != null ? DateFormat('d MMM yyyy').format(DateTime.parse(req['end_date'].toString().split('T')[0])) : startDate;
+    final dateStr = startDate == endDate ? startDate : '$startDate - $endDate';
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1B202D) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.undo_rounded, color: Color(0xFFEA580C)),
+            SizedBox(width: 8),
+            Text('Withdraw Leave', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+          ],
+        ),
+        content: Text(
+          'Are you sure you want to withdraw your $title for $dateStr?\n\nThis will cancel your leave request and restore your balance.',
+          style: const TextStyle(fontSize: 13, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFEA580C),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Withdraw', style: TextStyle(fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        final res = await apiPost('/api/leaves/$leaveId/withdraw', {}, token: widget.token);
+        if (res['error'] != null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error: ${res['error']}')),
+            );
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Leave request withdrawn successfully!')),
+            );
+            _fetchLeaves();
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to withdraw leave: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  void _showApplyLeaveModal(bool isDark, {Map<String, dynamic>? editingLeave}) {
+    final bool isEditing = editingLeave != null;
     final dialogBg = isDark ? const Color(0xFF131722) : Colors.white;
     final textPrimary = isDark ? Colors.white : const Color(0xFF171C23);
     final textSecondary = isDark ? const Color(0xFF9CA3AF) : const Color(0xFF524437);
@@ -310,10 +403,22 @@ class _ExploreTabState extends State<ExploreTab> {
 
     DateTime fromDate = DateTime.now();
     DateTime toDate = DateTime.now();
+    if (isEditing && editingLeave['start_date'] != null) {
+      fromDate = DateTime.tryParse(editingLeave['start_date'].toString().split('T')[0]) ?? DateTime.now();
+      toDate = editingLeave['end_date'] != null
+          ? (DateTime.tryParse(editingLeave['end_date'].toString().split('T')[0]) ?? fromDate)
+          : fromDate;
+    }
+
     String fromSession = 'Session 1';
     String toSession = 'Session 2';
-    String selectedLeaveType = 'Earned Leave'; // 'Earned Leave', 'Loss Of Pay', 'Comp - Off'
+    String selectedLeaveType = isEditing && editingLeave['leave_type'] != null
+        ? editingLeave['leave_type'].toString()
+        : 'Earned Leave'; // 'Earned Leave', 'Loss Of Pay', 'Comp - Off'
     bool submitting = false;
+
+    _leaveTitleCtrl.text = isEditing ? (editingLeave['title'] ?? '') : '';
+    _leaveNoteCtrl.text = isEditing ? (editingLeave['note'] ?? '') : '';
 
     double calculateDays(DateTime fDate, String fSess, DateTime tDate, String tSess) {
       final fNorm = DateTime(fDate.year, fDate.month, fDate.day);
@@ -379,9 +484,9 @@ class _ExploreTabState extends State<ExploreTab> {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Apply Leave',
+                          Text(isEditing ? 'Edit Leave' : 'Apply Leave',
                               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: textPrimary)),
-                          Text('Submit your leave request with session details',
+                          Text(isEditing ? 'Update your leave request details' : 'Submit your leave request with session details',
                               style: TextStyle(fontSize: 12, color: textSecondary)),
                         ],
                       ),
@@ -787,20 +892,21 @@ class _ExploreTabState extends State<ExploreTab> {
                                   final navigator = Navigator.of(ctx);
                                   setModalState(() => submitting = true);
                                   try {
-                                    final res = await apiPost(
-                                      '/api/leaves',
-                                      {
-                                        'title': _leaveTitleCtrl.text.trim().isEmpty ? selectedLeaveType : _leaveTitleCtrl.text.trim(),
-                                        'leave_type': selectedLeaveType,
-                                        'start_date': DateFormat('yyyy-MM-dd').format(fromDate),
-                                        'end_date': DateFormat('yyyy-MM-dd').format(toDate),
-                                        'from_session': fromSession,
-                                        'to_session': toSession,
-                                        'days_count': calculatedDays,
-                                        'note': _leaveNoteCtrl.text.trim(),
-                                      },
-                                      token: widget.token,
-                                    );
+                                    final payload = {
+                                      'title': _leaveTitleCtrl.text.trim().isEmpty ? selectedLeaveType : _leaveTitleCtrl.text.trim(),
+                                      'leave_type': selectedLeaveType,
+                                      'start_date': DateFormat('yyyy-MM-dd').format(fromDate),
+                                      'end_date': DateFormat('yyyy-MM-dd').format(toDate),
+                                      'from_session': fromSession,
+                                      'to_session': toSession,
+                                      'days_count': calculatedDays,
+                                      'note': _leaveNoteCtrl.text.trim(),
+                                    };
+
+                                    final res = isEditing
+                                        ? await apiPut('/api/leaves/${editingLeave['id']}', payload, token: widget.token)
+                                        : await apiPost('/api/leaves', payload, token: widget.token);
+
                                     if (res['error'] != null) {
                                       messenger.showSnackBar(
                                         SnackBar(content: Text('Error: ${res['error']}')),
@@ -810,7 +916,9 @@ class _ExploreTabState extends State<ExploreTab> {
                                       _fetchLeaves();
                                       messenger.showSnackBar(
                                         SnackBar(
-                                          content: Text('$selectedLeaveType request ($daysStr ${calculatedDays == 1.0 || calculatedDays == 0.5 ? 'Day' : 'Days'}) submitted!'),
+                                          content: Text(isEditing
+                                              ? 'Leave application updated ($daysStr ${calculatedDays == 1.0 || calculatedDays == 0.5 ? 'Day' : 'Days'})!'
+                                              : '$selectedLeaveType request ($daysStr ${calculatedDays == 1.0 || calculatedDays == 0.5 ? 'Day' : 'Days'}) submitted!'),
                                         ),
                                       );
                                     }
@@ -833,12 +941,12 @@ class _ExploreTabState extends State<ExploreTab> {
                                   height: 20,
                                   child: CircularProgressIndicator(strokeWidth: 2, color: amberDark),
                                 )
-                              : const Row(
+                              : Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    Text('Submit Request', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
-                                    SizedBox(width: 6),
-                                    Icon(Icons.arrow_forward_rounded, size: 16),
+                                    Text(isEditing ? 'Save Changes' : 'Submit Request', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+                                    const SizedBox(width: 6),
+                                    Icon(isEditing ? Icons.check_rounded : Icons.arrow_forward_rounded, size: 16),
                                   ],
                                 ),
                         ),
@@ -962,8 +1070,8 @@ class _ExploreTabState extends State<ExploreTab> {
                 itemBuilder: (_, idx) {
                   final rec = list[idx];
                   final dStr = rec['date'] ?? 'Record';
-                  final ciStr = rec['clock_in'] != null ? DateFormat('hh:mm a').format(DateTime.parse(rec['clock_in'])) : '-- : --';
-                  final coStr = rec['clock_out'] != null ? DateFormat('hh:mm a').format(DateTime.parse(rec['clock_out'])) : '-- : --';
+                  final ciStr = formatAppTime(rec['clock_in']);
+                  final coStr = formatAppTime(rec['clock_out']);
 
                   return Container(
                     margin: const EdgeInsets.only(bottom: 8),
@@ -979,7 +1087,7 @@ class _ExploreTabState extends State<ExploreTab> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(dStr, style: TextStyle(color: textCol, fontWeight: FontWeight.w800, fontSize: 13)),
-                            Text('$ciStr – $coStr', style: const TextStyle(color: Color(0xFF6B7280), fontSize: 11)),
+                            Text('In: $ciStr  •  Out: $coStr', style: const TextStyle(color: Color(0xFF6B7280), fontSize: 11)),
                           ],
                         ),
                         ElevatedButton(
@@ -1018,15 +1126,13 @@ class _ExploreTabState extends State<ExploreTab> {
     final textCol = isDark ? Colors.white : const Color(0xFF111827);
 
     final dateCtrl = TextEditingController(text: rec['date'] ?? DateFormat('yyyy-MM-dd').format(DateTime.now()));
+    final ciDt = parseAppDateTime(rec['clock_in']);
+    final coDt = parseAppDateTime(rec['clock_out']);
     final ciCtrl = TextEditingController(
-      text: rec['clock_in'] != null
-          ? DateFormat('HH:mm:ss').format(DateTime.parse(rec['clock_in']))
-          : '09:30:00',
+      text: ciDt != null ? DateFormat('HH:mm:ss').format(ciDt) : '09:30:00',
     );
     final coCtrl = TextEditingController(
-      text: rec['clock_out'] != null
-          ? DateFormat('HH:mm:ss').format(DateTime.parse(rec['clock_out']))
-          : '18:30:00',
+      text: coDt != null ? DateFormat('HH:mm:ss').format(coDt) : '18:30:00',
     );
 
     showDialog(
@@ -1249,7 +1355,36 @@ class _ExploreTabState extends State<ExploreTab> {
       ),
       body: (_loadingLeaves && _mainTabSegment == 0) || (_loadingTeam && _mainTabSegment == 1)
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
+          : GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onHorizontalDragStart: (_) => _leavesDragDeltaX = 0,
+              onHorizontalDragUpdate: (details) => _leavesDragDeltaX += details.delta.dx,
+              onHorizontalDragEnd: (details) {
+                final velocity = details.primaryVelocity ?? 0;
+                final isSwipeLeft = velocity < -180 || _leavesDragDeltaX < -50;
+                final isSwipeRight = velocity > 180 || _leavesDragDeltaX > 50;
+                if (!isSwipeLeft && !isSwipeRight) return;
+
+                if (_isPrivileged) {
+                  if (isSwipeLeft && _mainTabSegment == 0) {
+                    setState(() => _mainTabSegment = 1);
+                    _fetchTeamData();
+                  } else if (isSwipeRight && _mainTabSegment == 1) {
+                    setState(() => _mainTabSegment = 0);
+                  }
+                } else {
+                  final filters = ['All', 'Pending', 'Approved', 'Rejected'];
+                  final currentIndex = filters.indexOf(_activeFilter);
+                  if (currentIndex != -1) {
+                    if (isSwipeLeft && currentIndex < filters.length - 1) {
+                      setState(() => _activeFilter = filters[currentIndex + 1]);
+                    } else if (isSwipeRight && currentIndex > 0) {
+                      setState(() => _activeFilter = filters[currentIndex - 1]);
+                    }
+                  }
+                }
+              },
+              child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               children: [
                 // ── Privileged Role Tab Switcher (Manager / Team Leader / Admin) ──
@@ -1653,6 +1788,69 @@ class _ExploreTabState extends State<ExploreTab> {
                               ],
                             ),
                           ),
+                          if (status.toLowerCase() == 'pending review') ...[
+                            const SizedBox(height: 10),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                InkWell(
+                                  onTap: () => _showApplyLeaveModal(isDark, editingLeave: req),
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF3B82F6).withAlpha(isDark ? 35 : 20),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: const Color(0xFF3B82F6).withAlpha(80)),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.edit_outlined, size: 13, color: Color(0xFF3B82F6)),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          'Edit',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFF3B82F6),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                InkWell(
+                                  onTap: () => _confirmWithdrawLeave(req, isDark),
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFEA580C).withAlpha(isDark ? 35 : 20),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: const Color(0xFFEA580C).withAlpha(80)),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.undo_rounded, size: 13, color: Color(0xFFEA580C)),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          'Withdraw Leave',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFFEA580C),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ],
                       ),
                     );
@@ -1883,6 +2081,7 @@ class _ExploreTabState extends State<ExploreTab> {
                 const SizedBox(height: 20),
               ],
             ),
+          ),
     );
   }
 
@@ -2073,7 +2272,7 @@ class _ExploreTabState extends State<ExploreTab> {
 
         const SizedBox(height: 20),
 
-        // ── SECTION 1: Subordinate Pending Leave Approvals ───────────────────
+        // ── SECTION 1: Subordinate Leave Approvals / Status Oversight ──────────
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
@@ -2087,18 +2286,22 @@ class _ExploreTabState extends State<ExploreTab> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Leave Request Approvals',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.3)),
-                      Text(
-                        isMgr
-                            ? 'Review leaves from Team Leaders & Department staff'
-                            : 'Review leaves from employees in $deptName',
-                        style: TextStyle(fontSize: 11, color: textSecondary),
-                      ),
-                    ],
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isMgr ? 'Leave Requests Status' : 'Leave Request Approvals',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.3),
+                        ),
+                        Text(
+                          isMgr
+                              ? 'Monitor leave status across all departments'
+                              : 'Review pending leaves from employees in $deptName',
+                          style: TextStyle(fontSize: 11, color: textSecondary),
+                        ),
+                      ],
+                    ),
                   ),
                   if (pendingCount > 0)
                     Container(
@@ -2108,7 +2311,7 @@ class _ExploreTabState extends State<ExploreTab> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        '$pendingCount Action Needed',
+                        isMgr ? '$pendingCount Pending' : '$pendingCount Action Needed',
                         style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800),
                       ),
                     ),
@@ -2116,37 +2319,39 @@ class _ExploreTabState extends State<ExploreTab> {
               ),
               const SizedBox(height: 14),
 
-              // Filter Chips
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: ['All', 'Pending', 'Approved', 'Rejected'].map((filter) {
-                    final isSel = _teamSubFilter == filter;
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: GestureDetector(
-                        onTap: () => setState(() => _teamSubFilter = filter),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: isSel ? amberPrimary : (isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF0F4FD)),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Text(
-                            filter,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: isSel ? amberDark : textSecondary,
+              // Filter Chips (Only for Manager who monitors all statuses; TL only has pending requests)
+              if (isMgr) ...[
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: ['All', 'Pending', 'Approved', 'Rejected'].map((filter) {
+                      final isSel = _teamSubFilter == filter;
+                      return Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: GestureDetector(
+                          onTap: () => setState(() => _teamSubFilter = filter),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: isSel ? amberPrimary : (isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF0F4FD)),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Text(
+                              filter,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: isSel ? amberDark : textSecondary,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    );
-                  }).toList(),
+                      );
+                    }).toList(),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 14),
+                const SizedBox(height: 14),
+              ],
 
               if (filteredTeamLeaves.isEmpty)
                 Container(
@@ -2160,16 +2365,30 @@ class _ExploreTabState extends State<ExploreTab> {
                     children: [
                       Icon(Icons.done_all_rounded, size: 36, color: const Color(0xFF10B981).withAlpha(160)),
                       const SizedBox(height: 8),
-                      Text('No Leave Requests',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary)),
+                      Text(
+                        isMgr ? 'No Leave Records' : 'All Caught Up!',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary),
+                      ),
                       const SizedBox(height: 2),
-                      Text('There are no leave requests matching this filter.',
-                          style: TextStyle(fontSize: 11, color: textSecondary)),
+                      Text(
+                        isMgr
+                            ? 'There are no leave requests matching this filter.'
+                            : 'No pending leave requests requiring your review.',
+                        style: TextStyle(fontSize: 11, color: textSecondary),
+                      ),
                     ],
                   ),
                 )
               else
-                ...filteredTeamLeaves.map((leave) => _buildTeamLeaveCard(leave, isDark, bgCard, borderCol, textPrimary, textSecondary)),
+                ...filteredTeamLeaves.map((leave) => _buildTeamLeaveCard(
+                      leave,
+                      isDark,
+                      bgCard,
+                      borderCol,
+                      textPrimary,
+                      textSecondary,
+                      canAction: !isMgr,
+                    )),
             ],
           ),
         ),
@@ -2261,16 +2480,16 @@ class _ExploreTabState extends State<ExploreTab> {
                               children: [
                                 Icon(
                                   Icons.business_rounded,
-                                  size: 12,
+                                  size: 13,
                                   color: isSel ? const Color(0xFF0284C7) : textSecondary,
                                 ),
                                 const SizedBox(width: 4),
                                 Text(
-                                  dept == 'All' ? 'All Depts' : dept,
+                                  dept,
                                   style: TextStyle(
                                     fontSize: 11,
-                                    fontWeight: isSel ? FontWeight.w800 : FontWeight.w600,
-                                    color: isSel ? const Color(0xFF0284C7) : textSecondary,
+                                    fontWeight: isSel ? FontWeight.w800 : FontWeight.w500,
+                                    color: isSel ? (isDark ? Colors.white : const Color(0xFF0284C7)) : textSecondary,
                                   ),
                                 ),
                               ],
@@ -2282,10 +2501,9 @@ class _ExploreTabState extends State<ExploreTab> {
                   ),
                 ),
                 const SizedBox(height: 14),
-              ] else ...[
-                const SizedBox(height: 4),
               ],
 
+              // Members List
               if (filteredMembers.isEmpty)
                 Container(
                   width: double.infinity,
@@ -2296,14 +2514,11 @@ class _ExploreTabState extends State<ExploreTab> {
                   ),
                   child: Column(
                     children: [
-                      Icon(Icons.person_search_rounded, size: 36, color: textSecondary.withAlpha(140)),
+                      Icon(Icons.person_off_rounded, size: 36, color: textSecondary.withAlpha(120)),
                       const SizedBox(height: 8),
-                      Text('No Members Found',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary)),
+                      Text('No Members Found', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary)),
                       const SizedBox(height: 2),
-                      Text('No team members match the selected department and role filters.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 11, color: textSecondary)),
+                      Text('No team members match the selected filter.', style: TextStyle(fontSize: 11, color: textSecondary)),
                     ],
                   ),
                 )
@@ -2399,7 +2614,15 @@ class _ExploreTabState extends State<ExploreTab> {
     );
   }
 
-  Widget _buildTeamLeaveCard(Map<String, dynamic> leave, bool isDark, Color bgCard, Color borderCol, Color textPrimary, Color textSecondary) {
+  Widget _buildTeamLeaveCard(
+    Map<String, dynamic> leave,
+    bool isDark,
+    Color bgCard,
+    Color borderCol,
+    Color textPrimary,
+    Color textSecondary, {
+    bool canAction = true,
+  }) {
     final status = (leave['status'] ?? 'Pending Review').toString();
     final isPending = status == 'Pending Review';
     final isApproved = status == 'Approved';
@@ -2407,109 +2630,340 @@ class _ExploreTabState extends State<ExploreTab> {
     final applicantName = leave['employee_name'] ?? 'Employee';
     final applicantRole = leave['role'] ?? 'Employee';
     final dept = leave['department'] ?? 'General';
-    final leaveType = leave['leave_type'] ?? 'Earned Leave';
-    final daysCount = leave['days_count'] ?? 1.0;
-    final startDate = leave['start_date'] ?? '';
-    final endDate = leave['end_date'] ?? '';
-    final note = leave['note'] ?? '';
+    final leaveType = (leave['leave_type'] ?? 'Earned Leave').toString();
+    final daysCount = (leave['days_count'] is num) ? (leave['days_count'] as num).toDouble() : (double.tryParse(leave['days_count']?.toString() ?? '1.0') ?? 1.0);
+    final startDate = (leave['start_date'] ?? '').toString();
+    final endDate = (leave['end_date'] ?? startDate).toString();
+    final title = (leave['title'] ?? '').toString().trim();
+    final note = (leave['note'] ?? '').toString().trim();
     final leaveId = leave['id'];
 
+    // ── Safe Date Formatting ─────────────────────────────────────────────────
+    DateTime? sDt;
+    DateTime? eDt;
+    try {
+      if (startDate.isNotEmpty) sDt = DateTime.parse(startDate.split('T')[0]);
+    } catch (_) {}
+    try {
+      if (endDate.isNotEmpty) eDt = DateTime.parse(endDate.split('T')[0]);
+    } catch (_) {}
+
+    String formattedDateStr = '';
+    if (sDt != null && eDt != null) {
+      final sStr = DateFormat('yyyy-MM-dd').format(sDt);
+      final eStr = DateFormat('yyyy-MM-dd').format(eDt);
+      if (sStr == eStr) {
+        formattedDateStr = DateFormat('EEEE, d MMMM yyyy').format(sDt);
+      } else {
+        formattedDateStr = '${DateFormat('d MMM yyyy').format(sDt)}  ➔  ${DateFormat('d MMM yyyy').format(eDt)}';
+      }
+    } else if (sDt != null) {
+      formattedDateStr = DateFormat('EEEE, d MMMM yyyy').format(sDt);
+    } else {
+      formattedDateStr = '$startDate to $endDate';
+    }
+
+    // ── Duration Text ────────────────────────────────────────────────────────
+    String durationStr = '';
+    if (daysCount == 1.0) {
+      durationStr = '1 Day (Full Day)';
+    } else if (daysCount == 0.5) {
+      durationStr = '0.5 Day (Half Day)';
+    } else {
+      final countInt = (daysCount == daysCount.roundToDouble()) ? daysCount.toInt().toString() : daysCount.toString();
+      durationStr = '$countInt Days';
+    }
+
+    // ── Leave Type Colors ────────────────────────────────────────────────────
+    final lTypeLower = leaveType.toLowerCase();
+    Color typeBg;
+    Color typeColor;
+
+    if (lTypeLower.contains('loss') || lTypeLower.contains('lop') || lTypeLower.contains('unpaid')) {
+      typeBg = isDark ? const Color(0xFF2E1A1A) : const Color(0xFFFFECEB);
+      typeColor = isDark ? const Color(0xFFFF6B6B) : const Color(0xFFC92A2A);
+    } else if (lTypeLower.contains('comp') || lTypeLower.contains('co')) {
+      typeBg = isDark ? const Color(0xFF201B2E) : const Color(0xFFF3E8FF);
+      typeColor = isDark ? const Color(0xFFA855F7) : const Color(0xFF7E22CE);
+    } else {
+      typeBg = isDark ? const Color(0xFF26151B) : const Color(0xFFFCE4EC);
+      typeColor = isDark ? const Color(0xFFFB7185) : const Color(0xFFB91C68);
+    }
+
+    final hasDistinctTitle = title.isNotEmpty && title.toLowerCase() != leaveType.toLowerCase();
+
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(18),
+        color: isDark ? const Color(0xFF161B26) : Colors.white,
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: isPending ? const Color(0xFFF5A952).withAlpha(120) : borderCol,
+          color: isPending
+              ? (isDark ? const Color(0xFFF5A952).withAlpha(120) : const Color(0xFFFDE68A))
+              : borderCol,
           width: isPending ? 1.5 : 1.0,
         ),
+        boxShadow: isDark
+            ? []
+            : [
+                BoxShadow(
+                  color: Colors.black.withAlpha(8),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                )
+              ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Applicant & Status Header ────────────────────────────────────────
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  CircleAvatar(
-                    radius: 16,
-                    backgroundColor: const Color(0xFF3F83F8).withAlpha(35),
-                    child: Text(
-                      applicantName[0].toUpperCase(),
-                      style: const TextStyle(color: Color(0xFF3F83F8), fontWeight: FontWeight.w800, fontSize: 13),
+              Expanded(
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundColor: const Color(0xFF3F83F8).withAlpha(30),
+                      child: Text(
+                        applicantName.isNotEmpty ? applicantName[0].toUpperCase() : 'E',
+                        style: const TextStyle(color: Color(0xFF3F83F8), fontWeight: FontWeight.w800, fontSize: 14),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(applicantName, style: TextStyle(color: textPrimary, fontWeight: FontWeight.w800, fontSize: 13)),
-                      Text('$applicantRole • $dept', style: TextStyle(color: textSecondary, fontSize: 10, fontWeight: FontWeight.w500)),
-                    ],
-                  ),
-                ],
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            applicantName,
+                            style: TextStyle(color: textPrimary, fontWeight: FontWeight.w800, fontSize: 14),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
+                          const SizedBox(height: 1),
+                          Text(
+                            '$applicantRole • $dept',
+                            style: TextStyle(color: textSecondary, fontSize: 11, fontWeight: FontWeight.w500),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
+              const SizedBox(width: 8),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color: isPending
                       ? (isDark ? const Color(0xFF261D12) : const Color(0xFFFEF3C7))
                       : isApproved
                           ? (isDark ? const Color(0xFF132A20) : const Color(0xFFD1FAE5))
                           : (isDark ? const Color(0xFF2B1618) : const Color(0xFFFEE2E2)),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  status,
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w800,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
                     color: isPending
-                        ? (isDark ? const Color(0xFFF5A952) : const Color(0xFF92400E))
+                        ? (isDark ? const Color(0xFFF5A952).withAlpha(100) : const Color(0xFFFCD34D))
                         : isApproved
-                            ? (isDark ? const Color(0xFF34D399) : const Color(0xFF065F46))
-                            : (isDark ? const Color(0xFFF87171) : const Color(0xFF991B1B)),
+                            ? (isDark ? const Color(0xFF34D399).withAlpha(100) : const Color(0xFF86EFAC))
+                            : (isDark ? const Color(0xFFF87171).withAlpha(100) : const Color(0xFFFCA5A5)),
+                    width: 0.8,
                   ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: isPending
+                            ? const Color(0xFFD97706)
+                            : isApproved
+                                ? const Color(0xFF16A34A)
+                                : const Color(0xFFDC2626),
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      status,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        color: isPending
+                            ? (isDark ? const Color(0xFFF5A952) : const Color(0xFF92400E))
+                            : isApproved
+                                ? (isDark ? const Color(0xFF34D399) : const Color(0xFF065F46))
+                                : (isDark ? const Color(0xFFF87171) : const Color(0xFF991B1B)),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
 
-          // Leave Details Row
+          // ── Leave Information & Dates Card ───────────────────────────────────
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
-              color: bgCard,
-              borderRadius: BorderRadius.circular(12),
+              color: isDark ? const Color(0xFF11151E) : const Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isDark ? const Color(0xFF1E2638) : const Color(0xFFE2E8F0),
+                width: 0.8,
+              ),
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Date Row
                 Row(
                   children: [
-                    const Icon(Icons.event_note_rounded, size: 16, color: Color(0xFF3F83F8)),
-                    const SizedBox(width: 6),
-                    Text('$leaveType ($daysCount Days)',
-                        style: TextStyle(color: textPrimary, fontWeight: FontWeight.w700, fontSize: 12)),
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF3B82F6).withAlpha(isDark ? 35 : 20),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(Icons.calendar_month_rounded, size: 16, color: Color(0xFF3B82F6)),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'LEAVE DATE',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.8,
+                              color: textSecondary,
+                            ),
+                          ),
+                          const SizedBox(height: 1),
+                          Text(
+                            formattedDateStr,
+                            style: TextStyle(
+                              color: textPrimary,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
-                Text('$startDate to $endDate',
-                    style: TextStyle(color: textSecondary, fontSize: 11, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 10),
+
+                // Badges: Leave Type & Duration
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                      decoration: BoxDecoration(
+                        color: typeBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: typeColor.withAlpha(60)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.flight_takeoff_rounded, size: 11, color: typeColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            leaveType,
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: typeColor),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF1E2638) : const Color(0xFFE2E8F0),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.schedule_rounded, size: 11, color: textSecondary),
+                          const SizedBox(width: 4),
+                          Text(
+                            durationStr,
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: textPrimary),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
 
-          if (note.toString().isNotEmpty) ...[
-            const SizedBox(height: 6),
-            Text('Reason: "$note"',
-                style: TextStyle(color: textSecondary, fontStyle: FontStyle.italic, fontSize: 11)),
+          // ── Purpose / Title ──────────────────────────────────────────────────
+          if (hasDistinctTitle) ...[
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Purpose: ',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: textSecondary),
+                ),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: textPrimary),
+                  ),
+                ),
+              ],
+            ),
           ],
 
-          if (isPending) ...[
-            const SizedBox(height: 12),
+          // ── Note / Comments ──────────────────────────────────────────────────
+          if (note.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF141924) : const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: borderCol.withAlpha(70)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.format_quote_rounded, size: 14, color: textSecondary),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      note,
+                      style: TextStyle(color: textSecondary, fontStyle: FontStyle.italic, fontSize: 11),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+
+          // ── Action Buttons for Team Leader ───────────────────────────────────
+          if (canAction && isPending) ...[
+            const SizedBox(height: 14),
             Row(
               children: [
                 Expanded(
@@ -2520,10 +2974,10 @@ class _ExploreTabState extends State<ExploreTab> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF16A34A),
                       foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       elevation: 0,
-                      textStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+                      textStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
                     ),
                   ),
                 ),
@@ -2569,9 +3023,9 @@ class _ExploreTabState extends State<ExploreTab> {
                     style: OutlinedButton.styleFrom(
                       foregroundColor: const Color(0xFFDC2626),
                       side: const BorderSide(color: Color(0xFFDC2626)),
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      textStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      textStyle: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
                     ),
                   ),
                 ),

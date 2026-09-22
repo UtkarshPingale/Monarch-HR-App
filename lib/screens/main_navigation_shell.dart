@@ -28,7 +28,9 @@ class MainNavigationContainer extends StatefulWidget {
 
 class _MainNavigationContainerState extends State<MainNavigationContainer> {
   int _currentIndex = 0;
+  final GlobalKey<HomeScreenTabState> _homeKey = GlobalKey<HomeScreenTabState>();
   final GlobalKey<AttendanceInfoTabState> _attendanceKey = GlobalKey<AttendanceInfoTabState>();
+  final GlobalKey<ExploreTabState> _exploreKey = GlobalKey<ExploreTabState>();
 
   @override
   void initState() {
@@ -46,6 +48,20 @@ class _MainNavigationContainerState extends State<MainNavigationContainer> {
     if (mounted) setState(() {});
   }
 
+  void _switchTab(int index) {
+    if (_currentIndex != index) {
+      setState(() => _currentIndex = index);
+    }
+    // Instant data refresh on active tab switch
+    if (index == 0) {
+      _homeKey.currentState?.refreshData();
+    } else if (index == 1) {
+      _attendanceKey.currentState?.refreshData();
+    } else if (index == 2) {
+      _exploreKey.currentState?.refreshData();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = themeController.isDarkMode;
@@ -61,32 +77,33 @@ class _MainNavigationContainerState extends State<MainNavigationContainer> {
 
     final screens = [
       HomeScreenTab(
+        key: _homeKey,
         token: widget.token,
         user: widget.user,
         password: widget.password,
         onLogout: widget.onLogout,
+        onNavigateToLeave: () => _switchTab(2),
         onNavigateToAttendance: ({String? subTab}) {
-          setState(() {
-            _currentIndex = 1;
-            if (subTab != null) {
-              _attendanceKey.currentState?.setSubTab(subTab);
-            }
-          });
+          _switchTab(1);
+          if (subTab != null) {
+            _attendanceKey.currentState?.setSubTab(subTab);
+          }
         },
-        onNavigateToProfile: () => setState(() => _currentIndex = 3),
+        onNavigateToProfile: () => _switchTab(3),
       ),
       AttendanceInfoTab(
         key: _attendanceKey,
         token: widget.token,
         user: widget.user,
-        onNavigateToProfile: () => setState(() => _currentIndex = 3),
+        onNavigateToProfile: () => _switchTab(3),
       ),
       ExploreTab(
+        key: _exploreKey,
         token: widget.token,
         user: widget.user,
         password: widget.password,
         onLogout: widget.onLogout,
-        onNavigateToProfile: () => setState(() => _currentIndex = 3),
+        onNavigateToProfile: () => _switchTab(3),
       ),
       EngageTab(
         token: widget.token,
@@ -110,7 +127,7 @@ class _MainNavigationContainerState extends State<MainNavigationContainer> {
 
         // Level 2: If on non-Home tab, navigate back to Home tab (index 0)
         if (_currentIndex != 0) {
-          setState(() => _currentIndex = 0);
+          _switchTab(0);
           return;
         }
 
@@ -164,7 +181,7 @@ class _MainNavigationContainerState extends State<MainNavigationContainer> {
     final selectedFg = isSelected ? const Color(0xFF6B3F00) : (isDark ? const Color(0xFF9CA3AF) : const Color(0xFF524437));
 
     return GestureDetector(
-      onTap: () => setState(() => _currentIndex = index),
+      onTap: () => _switchTab(index),
       behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),

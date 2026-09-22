@@ -11,6 +11,7 @@ class AppUpdateDialog extends StatelessWidget {
   final String releaseNotes;
   final String downloadUrl;
   final bool isForceUpdate;
+  final int versionLag;
 
   const AppUpdateDialog({
     super.key,
@@ -22,6 +23,7 @@ class AppUpdateDialog extends StatelessWidget {
     required this.releaseNotes,
     required this.downloadUrl,
     required this.isForceUpdate,
+    this.versionLag = 0,
   });
 
   Future<void> _launchUpdateUrl(BuildContext context) async {
@@ -69,7 +71,10 @@ class AppUpdateDialog extends StatelessWidget {
           decoration: BoxDecoration(
             color: bgCard,
             borderRadius: BorderRadius.circular(28),
-            border: Border.all(color: borderColor, width: 1.2),
+            border: Border.all(
+              color: isForceUpdate ? const Color(0xFFFF2A55).withAlpha(120) : borderColor,
+              width: isForceUpdate ? 1.8 : 1.2,
+            ),
             boxShadow: [
               BoxShadow(
                 color: isDark ? const Color(0x99000000) : const Color(0x1A171C23),
@@ -87,22 +92,24 @@ class AppUpdateDialog extends StatelessWidget {
                 width: 64,
                 height: 64,
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFFF5A952), Color(0xFFE08E2E)],
+                  gradient: LinearGradient(
+                    colors: isForceUpdate
+                        ? [const Color(0xFFFF4D4D), const Color(0xFFE11D48)]
+                        : [const Color(0xFFF5A952), const Color(0xFFE08E2E)],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
                   shape: BoxShape.circle,
                   boxShadow: [
                     BoxShadow(
-                      color: amberPrimary.withAlpha(80),
+                      color: (isForceUpdate ? const Color(0xFFFF2A55) : amberPrimary).withAlpha(80),
                       blurRadius: 18,
                       offset: const Offset(0, 6),
                     )
                   ],
                 ),
-                child: const Icon(
-                  Icons.rocket_launch_rounded,
+                child: Icon(
+                  isForceUpdate ? Icons.system_security_update_rounded : Icons.rocket_launch_rounded,
                   color: Colors.white,
                   size: 32,
                 ),
@@ -122,7 +129,32 @@ class AppUpdateDialog extends StatelessWidget {
                 ),
               ),
 
-              const SizedBox(height: 8),
+              if (isForceUpdate) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF2A55).withAlpha(isDark ? 35 : 20),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFFF2A55).withAlpha(100)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, size: 14, color: Color(0xFFE11D48)),
+                      const SizedBox(width: 6),
+                      Text(
+                        versionLag >= 2
+                            ? 'Mandatory: Installed app is $versionLag versions behind'
+                            : 'Mandatory update to continue using Monarch HR',
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFFE11D48)),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 12),
 
               // Version Tags Row
               Row(
@@ -175,7 +207,7 @@ class AppUpdateDialog extends StatelessWidget {
               const SizedBox(height: 6),
               Container(
                 width: double.infinity,
-                constraints: const BoxConstraints(maxHeight: 160),
+                constraints: const BoxConstraints(maxHeight: 150),
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
                   color: notesBg,
@@ -205,13 +237,13 @@ class AppUpdateDialog extends StatelessWidget {
                 child: ElevatedButton.icon(
                   onPressed: () => _launchUpdateUrl(context),
                   icon: const Icon(Icons.download_rounded, size: 18),
-                  label: const Text(
-                    'Update Now',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                  label: Text(
+                    isForceUpdate ? 'Update Now (Required)' : 'Download & Update Now',
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
                   ),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: amberPrimary,
-                    foregroundColor: amberDark,
+                    backgroundColor: isForceUpdate ? const Color(0xFFE11D48) : amberPrimary,
+                    foregroundColor: isForceUpdate ? Colors.white : amberDark,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                     elevation: 0,
