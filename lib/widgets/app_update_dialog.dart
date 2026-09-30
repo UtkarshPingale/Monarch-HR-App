@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../controllers/theme_controller.dart';
@@ -10,6 +12,8 @@ class AppUpdateDialog extends StatelessWidget {
   final String title;
   final String releaseNotes;
   final String downloadUrl;
+  final String? playStoreUrl;
+  final String? appStoreUrl;
   final bool isForceUpdate;
   final int versionLag;
 
@@ -22,29 +26,80 @@ class AppUpdateDialog extends StatelessWidget {
     required this.title,
     required this.releaseNotes,
     required this.downloadUrl,
+    this.playStoreUrl,
+    this.appStoreUrl,
     required this.isForceUpdate,
     this.versionLag = 0,
   });
 
   Future<void> _launchUpdateUrl(BuildContext context) async {
-    if (downloadUrl.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Download URL not provided.')),
-      );
+    final bool isIos = !kIsWeb && Platform.isIOS;
+
+    if (isIos) {
+      const String appStoreScheme = 'itms-apps://apps.apple.com/app/monarch-hr/id6470000000';
+      const String appStoreWeb = 'https://apps.apple.com/app/monarch-hr/id6470000000';
+      final String iosTarget = (appStoreUrl ?? downloadUrl).trim();
+
+      if (iosTarget.isNotEmpty && (iosTarget.contains('apple.com') || iosTarget.startsWith('itms-apps://'))) {
+        try {
+          final uri = Uri.parse(iosTarget);
+          if (await launchUrl(uri, mode: LaunchMode.externalApplication)) return;
+        } catch (_) {}
+      }
+
+      try {
+        final schemeUri = Uri.parse(appStoreScheme);
+        if (await canLaunchUrl(schemeUri)) {
+          await launchUrl(schemeUri, mode: LaunchMode.externalApplication);
+          return;
+        }
+      } catch (_) {}
+
+      try {
+        final webUri = Uri.parse(appStoreWeb);
+        await launchUrl(webUri, mode: LaunchMode.externalApplication);
+      } catch (_) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not open Apple App Store.')),
+          );
+        }
+      }
       return;
     }
-    final uri = Uri.parse(downloadUrl);
+
+    // Android / Default
+    const playStorePackage = 'com.monarchconsultants.monarchhr';
+    final playStoreMarketUri = Uri.parse('market://details?id=$playStorePackage');
+    final playStoreWebUri = Uri.parse('https://play.google.com/store/apps/details?id=$playStorePackage');
+
+    final String target = (playStoreUrl ?? downloadUrl).trim();
+    final bool isDirectApk = target.toLowerCase().endsWith('.apk');
+
+    if (isDirectApk) {
+      try {
+        final uri = Uri.parse(target);
+        if (await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+          return;
+        }
+      } catch (_) {}
+    } else {
+      try {
+        if (await canLaunchUrl(playStoreMarketUri)) {
+          await launchUrl(playStoreMarketUri, mode: LaunchMode.externalApplication);
+          return;
+        }
+      } catch (_) {}
+    }
+
+    // Fallback to web Play Store
     try {
-      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!launched && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open download link.')),
-        );
-      }
+      final webUri = Uri.parse(target.isNotEmpty && target.contains('play.google.com') ? target : playStoreWebUri.toString());
+      await launchUrl(webUri, mode: LaunchMode.externalApplication);
     } catch (_) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Error opening browser for update.')),
+          const SnackBar(content: Text('Could not open Google Play Store.')),
         );
       }
     }
@@ -232,24 +287,43 @@ class AppUpdateDialog extends StatelessWidget {
               const SizedBox(height: 22),
 
               // Action Buttons
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () => _launchUpdateUrl(context),
-                  icon: const Icon(Icons.download_rounded, size: 18),
-                  label: Text(
-                    isForceUpdate ? 'Update Now (Required)' : 'Download & Update Now',
-                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: isForceUpdate ? const Color(0xFFE11D48) : amberPrimary,
-                    foregroundColor: isForceUpdate ? Colors.white : amberDark,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                    elevation: 0,
-                    shadowColor: amberPrimary.withAlpha(80),
-                  ),
-                ),
+              Builder(
+                builder: (context) {
+                  final bool isIos = !kIsWeb && Platform.isIOS;
+                  final bool isDirectApk = downloadUrl.trim().toLowerCase().endsWith('.apk');
+
+                  final IconData buttonIcon = isForceUpdate
+                      ? Icons.system_update_alt_rounded
+                      : (isIos
+                          ? Icons.apple
+                          : (isDirectApk ? Icons.download_rounded : Icons.shop_two_rounded));
+
+                  final String buttonLabel = isForceUpdate
+                      ? 'Update Now (Required)'
+                      : (isIos
+                          ? 'Update on App Store'
+                          : (isDirectApk ? 'Download APK & Update' : 'Update on Google Play'));
+
+                  return SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _launchUpdateUrl(context),
+                      icon: Icon(buttonIcon, size: 18),
+                      label: Text(
+                        buttonLabel,
+                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: isForceUpdate ? const Color(0xFFE11D48) : amberPrimary,
+                        foregroundColor: isForceUpdate ? Colors.white : amberDark,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                        elevation: 0,
+                        shadowColor: amberPrimary.withAlpha(80),
+                      ),
+                    ),
+                  );
+                },
               ),
 
               if (!isForceUpdate) ...[

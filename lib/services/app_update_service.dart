@@ -1,13 +1,36 @@
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../config/api_config.dart';
-import '../widgets/app_update_dialog.dart';
 
 class AppUpdateService {
-  // Current app release version & build number (matching pubspec.yaml: 1.0.2+6)
-  static const String currentVersionName = "1.0.2";
-  static const int currentVersionCode = 6;
+  // Current app release version & build number (dynamically resolved from device package info)
+  static String _currentVersionName = "1.0.3";
+  static int _currentVersionCode = 7;
+  static bool _initialized = false;
 
-  static bool _hasShownThisSession = false;
+  static String get currentVersionName => _currentVersionName;
+  static int get currentVersionCode => _currentVersionCode;
+
+  /// Initializes version and build number directly from native platform metadata
+  static Future<void> init() async {
+    if (_initialized) return;
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (info.version.isNotEmpty) {
+        _currentVersionName = info.version;
+      }
+      final bn = int.tryParse(info.buildNumber);
+      if (bn != null && bn > 0) {
+        _currentVersionCode = bn;
+      }
+      _initialized = true;
+    } catch (_) {
+      // Fallback to default constants if platform channel fails
+    }
+  }
 
   /// Calculates how many versions behind the local app is relative to remote.
   /// E.g. local 1.0.0 vs remote 1.0.2 -> 2 versions behind
@@ -43,19 +66,127 @@ class AppUpdateService {
     return 0;
   }
 
-  /// Compares version string or version code and shows dialog if update available
+  /// Silently checks if an update is available without opening any dialogs or snackbars
+  static Future<bool> isUpdateAvailable() async {
+    try {
+      await init();
+      final res = await apiGetJson('/api/app/version');
+      if (res is Map<String, dynamic>) {
+        final newVersionName = res['version_name']?.toString() ?? '1.0.0';
+        final newVersionCode = int.tryParse(res['version_code']?.toString() ?? '0') ?? 0;
+
+        final int versionLag = calculateVersionLag(
+          newVersionName,
+          currentVersionName,
+          newVersionCode,
+          currentVersionCode,
+        );
+
+        final bool hasNewerBuild = newVersionCode > currentVersionCode;
+        final bool hasNewerVersion = _isVersionNewer(newVersionName, currentVersionName);
+        return hasNewerBuild || hasNewerVersion || versionLag > 0;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  static const String playStorePackage = 'com.monarchconsultants.monarchhr';
+  static const String playStoreMarketUrl = 'market://details?id=$playStorePackage';
+  static const String playStoreWebUrl = 'https://play.google.com/store/apps/details?id=$playStorePackage';
+
+  static const String appStoreWebUrl = 'https://apps.apple.com/app/monarch-hr/id6470000000';
+  static const String appStoreSchemeUrl = 'itms-apps://apps.apple.com/app/monarch-hr/id6470000000';
+
+  /// Directly opens the target platform store (Google Play Store for Android, Apple App Store for iOS)
+  static Future<void> openStore({
+    BuildContext? context,
+    String? customUrl,
+    String? playStoreUrl,
+    String? appStoreUrl,
+  }) async {
+    final bool isIos = !kIsWeb && Platform.isIOS;
+
+    if (isIos) {
+      final String iosTarget = (appStoreUrl ?? customUrl ?? '').trim();
+      if (iosTarget.isNotEmpty && (iosTarget.contains('apple.com') || iosTarget.startsWith('itms-apps://'))) {
+        try {
+          final uri = Uri.parse(iosTarget);
+          if (await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+            return;
+          }
+        } catch (_) {}
+      }
+      try {
+        final schemeUri = Uri.parse(appStoreSchemeUrl);
+        if (await canLaunchUrl(schemeUri)) {
+          await launchUrl(schemeUri, mode: LaunchMode.externalApplication);
+          return;
+        }
+      } catch (_) {}
+      try {
+        final webUri = Uri.parse(appStoreWebUrl);
+        await launchUrl(webUri, mode: LaunchMode.externalApplication);
+        return;
+      } catch (_) {
+        if (context != null && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not open Apple App Store.')),
+          );
+        }
+      }
+      return;
+    }
+
+    // Android / Default
+    final String target = (playStoreUrl ?? customUrl ?? '').trim();
+    if (target.toLowerCase().endsWith('.apk')) {
+      try {
+        final uri = Uri.parse(target);
+        if (await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+          return;
+        }
+      } catch (_) {}
+    }
+
+    try {
+      final marketUri = Uri.parse(playStoreMarketUrl);
+      if (await canLaunchUrl(marketUri)) {
+        await launchUrl(marketUri, mode: LaunchMode.externalApplication);
+        return;
+      }
+    } catch (_) {}
+
+    try {
+      final webUri = Uri.parse(target.isNotEmpty && target.contains('play.google.com') ? target : playStoreWebUrl);
+      await launchUrl(webUri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      if (context != null && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open Google Play Store.')),
+        );
+      }
+    }
+  }
+
+  /// Backward compatible alias for openStore
+  static Future<void> openPlayStore({BuildContext? context, String? customUrl}) async {
+    await openStore(context: context, customUrl: customUrl);
+  }
+
+  /// Compares version string or version code and directly launches the store (Play Store for Android, App Store for iOS)
   static Future<bool> checkForUpdates(
     BuildContext context, {
     bool silent = true,
   }) async {
     try {
+      await init();
       final res = await apiGetJson('/api/app/version');
       if (res is Map<String, dynamic>) {
         final newVersionName = res['version_name']?.toString() ?? '1.0.0';
         final newVersionCode = int.tryParse(res['version_code']?.toString() ?? '0') ?? 0;
         final downloadUrl = res['download_url']?.toString() ?? '';
-        final releaseNotes = res['release_notes']?.toString() ?? '';
-        final title = res['title']?.toString() ?? 'Monarch HR Update Available!';
+        final playStoreUrl = res['play_store_url']?.toString() ?? '';
+        final appStoreUrl = res['app_store_url']?.toString() ?? '';
 
         final int versionLag = calculateVersionLag(
           newVersionName,
@@ -69,39 +200,27 @@ class AppUpdateService {
         final bool isUpdateAvailable = hasNewerBuild || hasNewerVersion || versionLag > 0;
 
         if (isUpdateAvailable) {
-          if (!silent || !_hasShownThisSession) {
-            _hasShownThisSession = true;
-            if (context.mounted) {
-              showDialog(
-                context: context,
-                barrierDismissible: true,
-                builder: (_) => AppUpdateDialog(
-                  currentVersion: currentVersionName,
-                  currentBuild: currentVersionCode,
-                  newVersion: newVersionName,
-                  newBuild: newVersionCode,
-                  title: title,
-                  releaseNotes: releaseNotes,
-                  downloadUrl: downloadUrl,
-                  isForceUpdate: false,
-                  versionLag: versionLag,
-                ),
-              );
-            }
+          if (context.mounted) {
+            await openStore(
+              context: context,
+              customUrl: downloadUrl,
+              playStoreUrl: playStoreUrl,
+              appStoreUrl: appStoreUrl,
+            );
           }
           return true;
         } else {
           if (!silent && context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: const Row(
+                content: Row(
                   children: [
-                    Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
-                    SizedBox(width: 10),
+                    const Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         'App is up to date! Monarch HR v$currentVersionName (Build $currentVersionCode) is the latest release.',
-                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                       ),
                     ),
                   ],

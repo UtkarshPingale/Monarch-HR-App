@@ -6,6 +6,7 @@ import '../controllers/theme_controller.dart';
 import '../services/date_time_helper.dart';
 import '../widgets/percentage_donut_painter.dart';
 import '../widgets/profile_avatar_badge.dart';
+import '../widgets/app_date_picker_dialog.dart';
 
 // ── Tab 2: MonarchHR Attendance History Screen ────────────────────────────────
 class AttendanceInfoTab extends StatefulWidget {
@@ -80,7 +81,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
   bool get _isLeaderOrManager {
     final role = (widget.user['role'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
-    return role == 'teamleader' || role == 'subteamlead' || role == 'seniorteamlead' || role == 'manager' || role == 'projectmanager' || role == 'admin' || role == 'hr';
+    return role == 'teamleader' || role == 'subteamlead' || role == 'seniorteamlead' || role == 'seniorteamleader' || role == 'manager' || role == 'projectmanager' || role == 'admin' || role == 'hr' || role.contains('leader') || role.contains('lead');
   }
 
   bool get _isManager {
@@ -118,7 +119,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     super.initState();
     themeController.addListener(_onThemeChanged);
     _loadData();
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+    _autoSyncTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (mounted) {
         _loadDataSilently();
       }
@@ -142,12 +143,12 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
   Future<void> _loadDataSilently() async {
     try {
-      final list = await apiGet('/api/attendance/me', token: widget.token).timeout(const Duration(seconds: 4));
-      final holidays = await apiGet('/api/holidays').timeout(const Duration(seconds: 4));
-      final leavesRes = await apiGetJson('/api/leaves/me', token: widget.token).timeout(const Duration(seconds: 4));
+      final list = await apiGet('/api/attendance/me', token: widget.token).timeout(const Duration(seconds: 6));
+      final holidays = await apiGet('/api/holidays').timeout(const Duration(seconds: 6));
+      final leavesRes = await apiGetJson('/api/leaves/me', token: widget.token).timeout(const Duration(seconds: 6));
 
       if (_isLeaderOrManager) {
-        _loadPunchRequests();
+        await _loadPunchRequests(silent: true);
       }
 
       if (mounted) {
@@ -165,12 +166,12 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
   Future<void> _loadData() async {
     try {
-      final list = await apiGet('/api/attendance/me', token: widget.token).timeout(const Duration(seconds: 4));
-      final holidays = await apiGet('/api/holidays').timeout(const Duration(seconds: 4));
-      final leavesRes = await apiGetJson('/api/leaves/me', token: widget.token).timeout(const Duration(seconds: 4));
+      final list = await apiGet('/api/attendance/me', token: widget.token).timeout(const Duration(seconds: 6));
+      final holidays = await apiGet('/api/holidays').timeout(const Duration(seconds: 6));
+      final leavesRes = await apiGetJson('/api/leaves/me', token: widget.token).timeout(const Duration(seconds: 6));
 
       if (_isLeaderOrManager) {
-        _loadPunchRequests();
+        await _loadPunchRequests(silent: true);
       }
 
       if (mounted) {
@@ -189,9 +190,11 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     }
   }
 
-  Future<void> _loadPunchRequests() async {
+  Future<void> _loadPunchRequests({bool silent = false}) async {
     if (!mounted) return;
-    setState(() => _loadingPunchRequests = true);
+    if (!silent && _teamPunchRequests.isEmpty) {
+      setState(() => _loadingPunchRequests = true);
+    }
     try {
       final res = await apiGetJson('/api/team/punch-requests', token: widget.token);
       if (res is Map && res['punch_requests'] is List) {
@@ -758,9 +761,15 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
                                       final dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][idx];
                                       final isRegisteredHoliday = holidayDates.contains(dayKey);
+                                      final isWeekend = dayDate.weekday == DateTime.sunday || dayDate.weekday == DateTime.saturday;
 
-                                      if (dayMins == 0 && isRegisteredHoliday) {
-                                        return _holidayColumn(dayName);
+                                      if (dayMins == 0) {
+                                        if (isRegisteredHoliday) {
+                                          return _holidayColumn(dayName);
+                                        }
+                                        if (isWeekend) {
+                                          return _dayOffColumn(dayName);
+                                        }
                                       }
 
                                       double heightFactor = (dayMins / 600.0).clamp(0.08, 1.0);
@@ -771,7 +780,6 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                                         dayName,
                                         heightFactor,
                                         isDark,
-                                        isHighlighted: isMaxDay || dayMins > 540,
                                         tooltip: tooltipText,
                                       );
                                     }),
@@ -786,14 +794,14 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                           const SizedBox(height: 12),
 
                           // Chart Legend Footer
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
+                          Wrap(
+                            alignment: WrapAlignment.center,
+                            spacing: 8,
+                            runSpacing: 6,
                             children: [
-                              _legendPill('Regular', const Color(0xFFE8F8F0), const Color(0xFF146C43)),
-                              const SizedBox(width: 12),
-                              _legendPill('Overtime', const Color(0xFFFFDBCC), const Color(0xFF99461A)),
-                              const SizedBox(width: 12),
-                              _legendPill('Holiday', const Color(0xFFE0F2FE), const Color(0xFF0284C7)),
+                              _legendPill('Regular', isDark ? const Color(0xFF11221E) : const Color(0xFFE8F8F0), isDark ? const Color(0xFF34D399) : const Color(0xFF146C43)),
+                              _legendPill('Holiday', isDark ? const Color(0xFF132235) : const Color(0xFFE0F2FE), isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7)),
+                              _legendPill('Day Off', isDark ? const Color(0xFF231A38) : const Color(0xFFEDE9FE), isDark ? const Color(0xFFA78BFA) : const Color(0xFF6D28D9)),
                             ],
                           ),
                         ],
@@ -1178,9 +1186,14 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   bool hasSession2 = false; // 13:31 - 18:30
 
                   for (var s in dayShifts) {
-                    totalMins += (s['total_minutes'] as int? ?? 0);
-                    final ci = s['clock_in'] != null ? DateTime.tryParse(s['clock_in'].toString()) : null;
-                    final co = s['clock_out'] != null ? DateTime.tryParse(s['clock_out'].toString()) : null;
+                    final ci = s['clock_in'] != null ? parseAppDateTime(s['clock_in']) : null;
+                    final co = s['clock_out'] != null ? parseAppDateTime(s['clock_out']) : null;
+
+                    if (s['total_minutes'] != null && (s['total_minutes'] as num) > 0) {
+                      totalMins += (s['total_minutes'] as num).toInt();
+                    } else if (ci != null && co != null) {
+                      totalMins += co.difference(ci).inMinutes;
+                    }
 
                     if (ci != null) {
                       if (ci.hour < 13 || (ci.hour == 13 && ci.minute <= 30)) {
@@ -1238,19 +1251,17 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     subTag = 'GEN';
                     bg = isDark ? const Color(0xFF11221E) : const Color(0xFFE8F5E9);
                     tagColor = isDark ? const Color(0xFF34D399) : const Color(0xFF146C43);
-                  } else if (hasSession1 && !hasSession2) {
-                    mainTag = 'P:A';
-                    subTag = 'HALF';
-                    bg = isDark ? const Color(0xFF241C14) : const Color(0xFFFFF3E0);
-                    tagColor = isDark ? const Color(0xFFFBA442) : const Color(0xFF895100);
-                  } else if (!hasSession1 && hasSession2) {
-                    mainTag = 'A:P';
-                    subTag = 'HALF';
-                    bg = isDark ? const Color(0xFF241C14) : const Color(0xFFFFF3E0);
-                    tagColor = isDark ? const Color(0xFFFBA442) : const Color(0xFF895100);
                   } else if (totalMins > 0) {
-                    mainTag = 'P:A';
-                    subTag = 'HALF';
+                    if (hasSession1 && !hasSession2) {
+                      mainTag = 'P:A';
+                      subTag = 'HALF';
+                    } else if (!hasSession1 && hasSession2) {
+                      mainTag = 'A:P';
+                      subTag = 'HALF';
+                    } else {
+                      mainTag = 'P:A';
+                      subTag = 'HALF';
+                    }
                     bg = isDark ? const Color(0xFF241C14) : const Color(0xFFFFF3E0);
                     tagColor = isDark ? const Color(0xFFFBA442) : const Color(0xFF895100);
                   } else if (isPast) {
@@ -1491,8 +1502,10 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
         if (co != null && co.hour >= 17) hasSession2 = true;
       }
 
+      // Full day is achieved whenever employee completes standard 9 hours (540 mins) or more, regardless of arrival/start time
+      final bool isFullDayCompleted = totalMinsAllShifts >= 540;
       // Half day should ONLY be flagged when shift has finished (user clocked out) and worked less than standard 9 hours (540 mins)
-      final isHalfDay = !isOffDay && !isShiftActive && lastCo != null && ((hasSession1 && !hasSession2) || (!hasSession1 && hasSession2) || (totalMinsAllShifts > 0 && totalMinsAllShifts < 540));
+      final isHalfDay = !isOffDay && !isShiftActive && lastCo != null && !isFullDayCompleted && totalMinsAllShifts > 0;
 
       final hrsStr = '${(totalMinsAllShifts ~/ 60).toString().padLeft(2, '0')}:${(totalMinsAllShifts % 60).toString().padLeft(2, '0')}';
       final otMins = totalMinsAllShifts > 540 ? (totalMinsAllShifts - 540) : 0;
@@ -1599,6 +1612,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                         decoration: BoxDecoration(
                           color: isDark ? const Color(0xFF132A20) : const Color(0xFF9FF1BD).withAlpha(120),
                           borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: isDark ? const Color(0xFF34D399) : const Color(0xFF22C55E)),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.end,
@@ -1607,7 +1621,10 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                               lastCo != null ? 'Shift Completed' : 'Shift Active',
                               style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: isDark ? const Color(0xFF34D399) : const Color(0xFF002110)),
                             ),
-                            Text('• On Time', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: isDark ? const Color(0xFF10B981) : const Color(0xFF146C43))),
+                            Text(
+                              isFullDayCompleted ? '• Full Day (Present)' : '• On Time',
+                              style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: isDark ? const Color(0xFF10B981) : const Color(0xFF146C43)),
+                            ),
                           ],
                         ),
                       ),
@@ -1776,7 +1793,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                               children: [
                                 const Icon(Icons.timer_outlined, size: 14, color: Color(0xFF99461A)),
                                 const SizedBox(width: 4),
-                                Text('Overtime Earned', style: TextStyle(fontSize: 10, color: textSecondary, fontWeight: FontWeight.w600)),
+                                Text('Overtime', style: TextStyle(fontSize: 10, color: textSecondary, fontWeight: FontWeight.w600)),
                               ],
                             ),
                             const SizedBox(height: 6),
@@ -2522,7 +2539,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                             const SizedBox(height: 6),
                             GestureDetector(
                               onTap: () async {
-                                final picked = await showDatePicker(
+                                final picked = await showAppDatePicker(
                                   context: context,
                                   initialDate: fromDate,
                                   firstDate: DateTime(2020),
@@ -2624,7 +2641,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                             const SizedBox(height: 6),
                             GestureDetector(
                               onTap: () async {
-                                final picked = await showDatePicker(
+                                final picked = await showAppDatePicker(
                                   context: context,
                                   initialDate: toDate.isBefore(fromDate) ? fromDate : toDate,
                                   firstDate: fromDate,
@@ -3016,9 +3033,13 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     // 2. Map attendance shifts by date
     final Map<String, int> dailyMinutesMap = {};
     for (var r in _attendanceRecords) {
-      final ci = r['clock_in'] != null ? DateTime.tryParse(r['clock_in'].toString()) : null;
-      final d = r['date'] != null ? DateTime.tryParse(r['date'].toString()) : ci;
-      final mins = (r['total_minutes'] is num) ? (r['total_minutes'] as num).toInt() : 0;
+      final ci = r['clock_in'] != null ? parseAppDateTime(r['clock_in']) : null;
+      final co = r['clock_out'] != null ? parseAppDateTime(r['clock_out']) : null;
+      final d = r['date'] != null ? parseAppDateTime(r['date']) : ci;
+      int mins = (r['total_minutes'] is num) ? (r['total_minutes'] as num).toInt() : 0;
+      if (mins == 0 && ci != null && co != null) {
+        mins = co.difference(ci).inMinutes;
+      }
       if (d != null) {
         final dKey = DateFormat('yyyy-MM-dd').format(d);
         dailyMinutesMap[dKey] = (dailyMinutesMap[dKey] ?? 0) + mins;
@@ -3365,8 +3386,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     );
   }
 
-  Widget _barColumn(String day, double heightPct, bool isDark, {bool isHighlighted = false, String? tooltip}) {
-    final textSecondary = isDark ? const Color(0xFF9CA3AF) : const Color(0xFF524437);
+  Widget _barColumn(String day, double heightPct, bool isDark, {String? tooltip}) {
+    final textPrimary = isDark ? Colors.white : const Color(0xFF171C23);
 
     return Column(
       mainAxisAlignment: MainAxisAlignment.end,
@@ -3386,9 +3407,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
           width: 24,
           height: 110 * heightPct,
           decoration: BoxDecoration(
-            color: isHighlighted
-                ? (isDark ? const Color(0xFFF5A952) : const Color(0xFF99461A))
-                : (isDark ? const Color(0xFF10B981) : const Color(0xFF86D7A5)),
+            color: isDark ? const Color(0xFF10B981) : const Color(0xFF16A34A),
             borderRadius: BorderRadius.circular(12),
           ),
         ),
@@ -3397,10 +3416,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
           day,
           style: TextStyle(
             fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: isHighlighted
-                ? (isDark ? const Color(0xFFF5A952) : const Color(0xFF99461A))
-                : textSecondary,
+            fontWeight: FontWeight.w700,
+            color: textPrimary,
           ),
         ),
       ],
@@ -3440,6 +3457,45 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             fontSize: 11,
             fontWeight: FontWeight.w600,
             color: isDark ? const Color(0xFF38BDF8) : const Color(0xFFBA1A1A),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _dayOffColumn(String day) {
+    final isDark = themeController.isDarkMode;
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        Container(
+          width: 24,
+          height: 110,
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF231A38) : const Color(0xFFEDE9FE),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Center(
+            child: RotatedBox(
+              quarterTurns: 3,
+              child: Text(
+                'DAY OFF',
+                style: TextStyle(
+                    fontSize: 8,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.2,
+                    color: isDark ? const Color(0xFFA78BFA) : const Color(0xFF6D28D9)),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          day,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: isDark ? const Color(0xFFA78BFA) : const Color(0xFF6D28D9),
           ),
         ),
       ],

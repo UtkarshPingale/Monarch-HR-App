@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'controllers/theme_controller.dart';
 import 'screens/auth_gate.dart';
+import 'services/app_update_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppUpdateService.init();
   runApp(const AttendanceApp());
 }
 

@@ -5,6 +5,7 @@ import '../config/api_config.dart';
 import '../controllers/theme_controller.dart';
 import '../services/date_time_helper.dart';
 import '../widgets/profile_avatar_badge.dart';
+import '../widgets/app_date_picker_dialog.dart';
 
 // ── Tab 3: MonarchHR Leave Management & Admin Dashboard for SUMIT ──────────────
 class ExploreTab extends StatefulWidget {
@@ -54,9 +55,15 @@ class ExploreTabState extends State<ExploreTab> {
     return r.contains('manager') || r.contains('director') || r.contains('hr');
   }
 
+  bool get _isSeniorTeamLeader {
+    final r = (widget.user['role'] ?? '').toString().toLowerCase();
+    return (r.contains('senior') || r.contains('sr') || r.contains('sinor') || r.contains('snr')) &&
+        (r.contains('lead') || r.contains('tl') || r.contains('leader') || r.contains('head') || r.contains('manager'));
+  }
+
   bool get _isTeamLeader {
     final r = (widget.user['role'] ?? '').toString().toLowerCase();
-    return r.contains('lead') || r.contains('tl') || r.contains('head');
+    return r.contains('lead') || r.contains('tl') || r.contains('head') || r.contains('leader');
   }
 
   bool get _isAdmin {
@@ -64,7 +71,7 @@ class ExploreTabState extends State<ExploreTab> {
     return r == 'admin';
   }
 
-  bool get _isPrivileged => _isManager || _isTeamLeader || _isAdmin;
+  bool get _isPrivileged => _isManager || _isSeniorTeamLeader || _isTeamLeader || _isAdmin;
 
   final _holidayTitleCtrl = TextEditingController();
   final _holidayDateCtrl  = TextEditingController();
@@ -77,15 +84,15 @@ class ExploreTabState extends State<ExploreTab> {
   void initState() {
     super.initState();
     themeController.addListener(_onThemeChanged);
-    _fetchLeaves();
+    _fetchLeaves(showLoading: true);
     _fetchHolidays();
     if (widget.user['role'] == 'admin') {
-      _fetchAdminUsers();
+      _fetchAdminUsers(showLoading: true);
     }
     if (_isPrivileged) {
-      _fetchTeamData();
+      _fetchTeamData(showLoading: true);
     }
-    _autoSyncTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+    _autoSyncTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (mounted) {
         _fetchLeaves();
         if (_isPrivileged) {
@@ -126,7 +133,10 @@ class ExploreTabState extends State<ExploreTab> {
     return v % 1 == 0 ? v.toInt().toString() : v.toStringAsFixed(1);
   }
 
-  Future<void> _fetchLeaves() async {
+  Future<void> _fetchLeaves({bool showLoading = false}) async {
+    if (showLoading && _leavesList.isEmpty) {
+      setState(() => _loadingLeaves = true);
+    }
     try {
       final res = await apiGetJson('/api/leaves/me', token: widget.token).timeout(const Duration(seconds: 3));
       if (res is Map && mounted) {
@@ -156,8 +166,10 @@ class ExploreTabState extends State<ExploreTab> {
     } catch (_) {}
   }
 
-  Future<void> _fetchAdminUsers() async {
-    setState(() => _loadingUsers = true);
+  Future<void> _fetchAdminUsers({bool showLoading = false}) async {
+    if (showLoading && _usersList.isEmpty) {
+      setState(() => _loadingUsers = true);
+    }
     try {
       final list = await apiGet('/api/admin/users', token: widget.token);
       if (mounted) setState(() => _usersList = list);
@@ -165,9 +177,11 @@ class ExploreTabState extends State<ExploreTab> {
     if (mounted) setState(() => _loadingUsers = false);
   }
 
-  Future<void> _fetchTeamData() async {
+  Future<void> _fetchTeamData({bool showLoading = false}) async {
     if (!_isPrivileged) return;
-    setState(() => _loadingTeam = true);
+    if (showLoading && _teamHierarchy == null && _teamLeavesList.isEmpty) {
+      setState(() => _loadingTeam = true);
+    }
     try {
       final hierarchyRes = await apiGetJson('/api/team/hierarchy', token: widget.token);
       final leavesRes = await apiGetJson('/api/team/leaves', token: widget.token);
@@ -563,7 +577,7 @@ class ExploreTabState extends State<ExploreTab> {
                             const SizedBox(height: 6),
                             GestureDetector(
                               onTap: () async {
-                                final picked = await showDatePicker(
+                                final picked = await showAppDatePicker(
                                   context: context,
                                   initialDate: fromDate,
                                   firstDate: DateTime(2020),
@@ -668,7 +682,7 @@ class ExploreTabState extends State<ExploreTab> {
                             const SizedBox(height: 6),
                             GestureDetector(
                               onTap: () async {
-                                final picked = await showDatePicker(
+                                final picked = await showAppDatePicker(
                                   context: context,
                                   initialDate: toDate.isBefore(fromDate) ? fromDate : toDate,
                                   firstDate: fromDate,
@@ -2136,10 +2150,13 @@ class ExploreTabState extends State<ExploreTab> {
     // Filter members according to selected role and department
     final filteredMembers = members.where((m) {
       final role = (m['role'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
-      final isTL = role == 'teamleader' || role == 'subteamlead' || role == 'seniorteamlead' || role == 'lead' || role == 'tl';
-      final isEmp = role == 'employee' || (!isTL && role != 'manager' && role != 'admin' && role != 'projectmanager');
+      final isSrTL = (role.contains('senior') || role.contains('sr') || role.contains('sinor') || role.contains('snr')) &&
+          (role.contains('lead') || role.contains('tl') || role.contains('head') || role.contains('leader') || role.contains('manager'));
+      final isTL = !isSrTL && (role.contains('teamleader') || role.contains('subteamlead') || role.contains('lead') || role.contains('tl') || role.contains('head') || role.contains('leader'));
+      final isEmp = role == 'employee' || (!isTL && !isSrTL && role != 'manager' && role != 'admin' && role != 'projectmanager');
 
       // 1. Role filter
+      if (_teamAttendanceRoleFilter == 'Senior Team Leader' && !isSrTL) return false;
       if (_teamAttendanceRoleFilter == 'Team Leader' && !isTL) return false;
       if (_teamAttendanceRoleFilter == 'Employee' && !isEmp) return false;
 
@@ -2194,7 +2211,7 @@ class ExploreTabState extends State<ExploreTab> {
                           shape: BoxShape.circle,
                         ),
                         child: Icon(
-                          isMgr ? Icons.corporate_fare_rounded : Icons.supervisor_account_rounded,
+                          isMgr ? Icons.corporate_fare_rounded : (_isSeniorTeamLeader ? Icons.military_tech_rounded : Icons.supervisor_account_rounded),
                           color: isMgr ? const Color(0xFF2563EB) : amberDark,
                           size: 24,
                         ),
@@ -2204,13 +2221,21 @@ class ExploreTabState extends State<ExploreTab> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            isMgr ? '👔 Manager Operations' : '👥 Team Leader Portal',
+                            _isAdmin
+                                ? '🛡️ Admin Operations'
+                                : _isManager
+                                    ? '👔 Manager Operations'
+                                    : _isSeniorTeamLeader
+                                        ? '🎖️ Senior Team Leader Portal'
+                                        : '👥 Team Leader Portal',
                             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.3),
                           ),
                           Text(
-                            isMgr
-                                ? 'Full Organization & Team Leader Oversight'
-                                : 'Department: $deptName • Level 2 Approval',
+                            _isAdmin || _isManager
+                                ? 'Full Organization & Leadership Oversight'
+                                : _isSeniorTeamLeader
+                                    ? 'Department: $deptName • Senior Department Leadership'
+                                    : 'Department: $deptName • Level 2 Approval',
                             style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500),
                           ),
                         ],
@@ -2435,12 +2460,14 @@ class ExploreTabState extends State<ExploreTab> {
               ),
               const SizedBox(height: 14),
 
-              // ── Filter 1: Role Selector (All / Team Leader / Employee) ─────
+              // ── Filter 1: Role Selector (All / Sr Team Leader / Team Leader / Employee) ─────
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
                     _roleFilterChip('All', '👥 All Roles (${members.length})', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
+                    const SizedBox(width: 8),
+                    _roleFilterChip('Senior Team Leader', '🎖️ Sr Team Leaders', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
                     const SizedBox(width: 8),
                     _roleFilterChip('Team Leader', '👔 Team Leaders', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
                     const SizedBox(width: 8),

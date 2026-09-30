@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../services/app_update_service.dart';
 import 'login_screen.dart';
 import 'main_navigation_shell.dart';
 
@@ -23,9 +22,6 @@ class _AuthGateState extends State<AuthGate> {
   void initState() {
     super.initState();
     _load();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      AppUpdateService.checkForUpdates(context);
-    });
   }
 
   Future<void> _load() async {

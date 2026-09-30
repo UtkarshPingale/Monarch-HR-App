@@ -5,6 +5,7 @@ import '../config/api_config.dart';
 import '../controllers/theme_controller.dart';
 import '../services/app_update_service.dart';
 import '../widgets/profile_avatar_badge.dart';
+import '../widgets/app_date_picker_dialog.dart';
 
 // ── Tab 4: MonarchHR Employee Profile & Verification Screen ───────────────────
 class EngageTab extends StatefulWidget {
@@ -37,7 +38,7 @@ class _EngageTabState extends State<EngageTab> {
   bool _saving = false;
   bool _dailyReminder = true;
   TimeOfDay _reminderTime = const TimeOfDay(hour: 8, minute: 55);
-  bool _geofenceCheckIn = false;
+  bool _hasUpdateAvailable = false;
 
   @override
   void initState() {
@@ -47,6 +48,16 @@ class _EngageTabState extends State<EngageTab> {
     _initControllers();
     _loadAttendanceSettings();
     _fetchFreshProfile();
+    _checkUpdateStatus();
+  }
+
+  Future<void> _checkUpdateStatus() async {
+    await AppUpdateService.init();
+    if (mounted) setState(() {});
+    final hasUpdate = await AppUpdateService.isUpdateAvailable();
+    if (mounted) {
+      setState(() => _hasUpdateAvailable = hasUpdate);
+    }
   }
 
   Future<void> _loadAttendanceSettings() async {
@@ -58,7 +69,6 @@ class _EngageTabState extends State<EngageTab> {
           final h = prefs.getInt('pref_reminder_hour') ?? 8;
           final m = prefs.getInt('pref_reminder_minute') ?? 55;
           _reminderTime = TimeOfDay(hour: h, minute: m);
-          _geofenceCheckIn = prefs.getBool('pref_geofence_checkin') ?? false;
         });
       }
     } catch (_) {}
@@ -69,14 +79,6 @@ class _EngageTabState extends State<EngageTab> {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('pref_daily_reminder', val);
-    } catch (_) {}
-  }
-
-  Future<void> _saveGeofenceCheckIn(bool val) async {
-    setState(() => _geofenceCheckIn = val);
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('pref_geofence_checkin', val);
     } catch (_) {}
   }
 
@@ -698,7 +700,7 @@ class _EngageTabState extends State<EngageTab> {
                 const SizedBox(height: 6),
                 GestureDetector(
                   onTap: () async {
-                    final picked = await showDatePicker(
+                    final picked = await showAppDatePicker(
                       context: context,
                       initialDate: _joiningDate ?? DateTime.now(),
                       firstDate: DateTime(2000),
@@ -1036,47 +1038,6 @@ class _EngageTabState extends State<EngageTab> {
                     ),
                   ],
                 ),
-                Divider(color: borderCol, height: 20),
-
-                // Setting 2: Geofence
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(color: bgInput, shape: BoxShape.circle),
-                            child: Icon(Icons.location_on_rounded, color: textPrimary, size: 18),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('Geofence Auto Check-in',
-                                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary)),
-                                const SizedBox(height: 2),
-                                Text(
-                                  _geofenceCheckIn
-                                      ? 'Detect HQ beacon perimeter (Active)'
-                                      : 'Detect HQ beacon perimeter (Disabled)',
-                                  style: TextStyle(fontSize: 11, color: textSecondary),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Switch(
-                      value: _geofenceCheckIn,
-                      activeThumbColor: amberPrimary,
-                      onChanged: (val) => _saveGeofenceCheckIn(val),
-                    ),
-                  ],
-                ),
               ],
             ),
           ),
@@ -1104,18 +1065,69 @@ class _EngageTabState extends State<EngageTab> {
           Center(
             child: InkWell(
               borderRadius: BorderRadius.circular(20),
-              onTap: () => AppUpdateService.checkForUpdates(context, silent: false),
+              onTap: () async {
+                final hasUpdate = await AppUpdateService.checkForUpdates(context, silent: false);
+                if (mounted) {
+                  setState(() => _hasUpdateAvailable = hasUpdate);
+                }
+              },
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.system_update_alt_rounded, size: 14, color: textSecondary),
+                    Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Icon(
+                          Icons.system_update_alt_rounded,
+                          size: 14,
+                          color: _hasUpdateAvailable ? const Color(0xFFD97706) : textSecondary,
+                        ),
+                        if (_hasUpdateAvailable)
+                          Positioned(
+                            top: -2,
+                            right: -2,
+                            child: Container(
+                              width: 6,
+                              height: 6,
+                              decoration: const BoxDecoration(
+                                color: Color(0xFFF59E0B),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                     const SizedBox(width: 6),
                     Text(
                       'Monarch HR v${AppUpdateService.currentVersionName} (Build ${AppUpdateService.currentVersionCode}) • Check for Updates',
-                      style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w600),
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: _hasUpdateAvailable
+                            ? (isDark ? const Color(0xFFFBBF24) : const Color(0xFFB45309))
+                            : textSecondary,
+                        fontWeight: _hasUpdateAvailable ? FontWeight.w700 : FontWeight.w600,
+                      ),
                     ),
+                    if (_hasUpdateAvailable) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF59E0B),
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFFF59E0B).withAlpha(120),
+                              blurRadius: 4,
+                              spreadRadius: 1,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

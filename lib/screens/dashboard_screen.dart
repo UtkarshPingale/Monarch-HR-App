@@ -4,10 +4,10 @@ import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import '../config/api_config.dart';
 import '../controllers/theme_controller.dart';
-import '../services/app_update_service.dart';
 import '../services/date_time_helper.dart';
 import '../widgets/semicircle_gauge_painter.dart';
 import '../widgets/profile_avatar_badge.dart';
+import '../widgets/work_entry_sheet.dart';
 
 // ── MonarchHR Front Home Dashboard Page ───────────────────────────────────────
 class HomeScreenTab extends StatefulWidget {
@@ -48,8 +48,6 @@ class HomeScreenTabState extends State<HomeScreenTab> {
   List<dynamic> _myRecords = [];
 
   // Real Leave Data from PostgreSQL
-  double _totalLeaves = 25.0;
-  double _usedLeaves = 5.5;
   double _remainingLeaves = 19.5;
   int _pendingLeavesCount = 0;
   int _teamPendingApprovalsCount = 0;
@@ -71,9 +69,6 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         _fetchLeavesData();
         _fetchTeamApprovalsCount();
       }
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      AppUpdateService.checkForUpdates(context);
     });
   }
 
@@ -124,8 +119,6 @@ class HomeScreenTabState extends State<HomeScreenTab> {
       final res = await apiGetJson('/api/leaves/me', token: widget.token);
       if (res is Map && mounted) {
         setState(() {
-          _totalLeaves = double.tryParse(res['total_allotted']?.toString() ?? '') ?? 25.0;
-          _usedLeaves = double.tryParse(res['used_days']?.toString() ?? '') ?? 5.5;
           _remainingLeaves = double.tryParse(res['remaining_days']?.toString() ?? '') ?? 19.5;
           final leavesList = res['leaves'] is List ? res['leaves'] : [];
           _pendingLeavesCount = leavesList.where((l) => l['status']?.toString().toLowerCase().contains('pending') ?? false).length;
@@ -437,7 +430,11 @@ class HomeScreenTabState extends State<HomeScreenTab> {
 
     for (var r in _myRecords) {
       final ci = parseAppDateTime(r['clock_in']);
-      final mins = r['total_minutes'] as int? ?? 0;
+      final co = parseAppDateTime(r['clock_out']);
+      int mins = (r['total_minutes'] is num) ? (r['total_minutes'] as num).toInt() : 0;
+      if (mins == 0 && ci != null && co != null) {
+        mins = co.difference(ci).inMinutes;
+      }
       if (ci != null && ci.month == targetMonth && ci.year == targetYear) {
         monthShifts++;
         if (ci.hour < 9 || (ci.hour == 9 && ci.minute <= 30)) {
@@ -462,7 +459,11 @@ class HomeScreenTabState extends State<HomeScreenTab> {
     final weekMins = <int, int>{};
     for (var r in _myRecords) {
       final ci = parseAppDateTime(r['clock_in']);
-      final mins = r['total_minutes'] as int? ?? 0;
+      final co = parseAppDateTime(r['clock_out']);
+      int mins = (r['total_minutes'] is num) ? (r['total_minutes'] as num).toInt() : 0;
+      if (mins == 0 && ci != null && co != null) {
+        mins = co.difference(ci).inMinutes;
+      }
       if (ci != null) {
         weekMins[ci.weekday] = (weekMins[ci.weekday] ?? 0) + mins;
       }
@@ -684,6 +685,18 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                 Text(
                   "Today's Attendance",
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.4),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.calendar_today_rounded, size: 13, color: amberPrimary),
+                    const SizedBox(width: 5),
+                    Text(
+                      DateFormat('EEEE, dd MMM yyyy').format(DateTime.now()),
+                      style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: textSecondary),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 4),
                 Row(
@@ -975,7 +988,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                 ),
               ),
 
-              // Annual Leave Pool Card
+              // Work Entry / Daily Log Card
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
@@ -990,46 +1003,69 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Annual Pool', style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500)),
-                        Text('${_fmtDays(_usedLeaves)} Used / ${_fmtDays(_totalLeaves)}', style: TextStyle(fontSize: 11, color: textPrimary, fontWeight: FontWeight.w700)),
-                      ],
-                    ),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: Container(
-                        height: 28,
-                        color: isDark ? const Color(0xFF1F2633) : const Color(0xFFF0F4FD),
-                        child: FractionallySizedBox(
-                          alignment: Alignment.centerLeft,
-                          widthFactor: (_totalLeaves > 0 ? (_usedLeaves / _totalLeaves) : 0.22).clamp(0.12, 1.0),
-                          child: Container(
-                            color: isDark ? const Color(0xFFF5A952) : const Color(0xFFFFA276),
-                            child: Center(
-                              child: Text(
-                                '${_totalLeaves > 0 ? (_usedLeaves / _totalLeaves * 100).toStringAsFixed(0) : '22'}%',
-                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: isDark ? const Color(0xFF452600) : const Color(0xFF7D3205)),
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF5A952).withAlpha(isDark ? 40 : 25),
+                                shape: BoxShape.circle,
                               ),
+                              child: const Icon(Icons.assignment_outlined, size: 13, color: Color(0xFFD97706)),
                             ),
+                            const SizedBox(width: 5),
+                            Text('Work Entry', style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withAlpha(isDark ? 35 : 20),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            'Daily Log',
+                            style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w700, color: isDark ? const Color(0xFF34D399) : const Color(0xFF146C43)),
                           ),
                         ),
-                      ),
+                      ],
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Log Project Work',
+                          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.2),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Task, quantity & revisions',
+                          style: TextStyle(fontSize: 10, color: textSecondary, fontWeight: FontWeight.w500),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
                     ),
                     SizedBox(
                       width: double.infinity,
-                      child: OutlinedButton(
-                        onPressed: widget.onNavigateToAttendance,
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: borderCol),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          WorkEntrySheet.show(
+                            context,
+                            token: widget.token,
+                            onSaved: () {
+                              if (mounted) setState(() {});
+                            },
+                          );
+                        },
+                        icon: const Icon(Icons.add_task_rounded, size: 13),
+                        label: const Text('Fill Work Entry', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: isDark ? const Color(0xFFF5A952) : const Color(0xFFF5A952),
+                          foregroundColor: const Color(0xFF451A03),
                           padding: const EdgeInsets.symmetric(vertical: 8),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text('Apply Leave', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: textPrimary)),
-                            const SizedBox(width: 4),
-                            Icon(Icons.arrow_forward, size: 12, color: textPrimary),
-                          ],
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          elevation: 0,
                         ),
                       ),
                     ),
