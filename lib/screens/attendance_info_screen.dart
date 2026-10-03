@@ -48,6 +48,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
   DateTime? _viewingDetailDate; // Null = show calendar, DateTime = show detail view for that date
   double _remainingDays = 18.0;
   bool _showLegend = false; // Collapsed by default, toggleable by user
+  int? _selectedWeeklyBarIdx; // Selected bar index for interactive tap/hold timing tooltip
   double _infoTabDragDeltaX = 0;
   double _calDragDeltaX = 0;
   double _detailDragDeltaX = 0;
@@ -382,16 +383,6 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
       }
     }
 
-    // Find max worked day for tooltip
-    int maxMins = 0;
-    int maxDayIdx = -1;
-    weekDailyMins.forEach((idx, mins) {
-      if (mins > maxMins) {
-        maxMins = mins;
-        maxDayIdx = idx;
-      }
-    });
-
     return PopScope(
       canPop: _viewingDetailDate == null,
       onPopInvokedWithResult: (didPop, result) {
@@ -493,7 +484,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   }
                 },
                 child: ListView(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                padding: EdgeInsets.symmetric(horizontal: _activeSubTab == 'Day wise' ? 10 : 20, vertical: 12),
                 children: [
                   // ── Top Main Switcher for Team Leader & Manager (My Attendance vs Punch Approvals) ──
                   if (_isLeaderOrManager) ...[
@@ -761,26 +752,58 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
                                       final dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][idx];
                                       final isRegisteredHoliday = holidayDates.contains(dayKey);
-                                      final isWeekend = dayDate.weekday == DateTime.sunday || dayDate.weekday == DateTime.saturday;
+                                       final isSunday = dayDate.weekday == DateTime.sunday;
+                                       final satIndex = ((dayDate.day - 1) ~/ 7) + 1;
+                                       final isEvenSaturday = dayDate.weekday == DateTime.saturday && satIndex % 2 == 0;
+                                       final isWeeklyOff = isSunday || isEvenSaturday;
 
+                                      final bool isBarSelected = (_selectedWeeklyBarIdx == idx);
+                                       final int h = dayMins ~/ 60;
+                                       final int m = dayMins % 60;
+                                       final String? tooltipText = isBarSelected ? '$h:${m.toString().padLeft(2, "0")}h' : null;
+
+                                      Widget barWidget;
                                       if (dayMins == 0) {
                                         if (isRegisteredHoliday) {
-                                          return _holidayColumn(dayName);
+                                          barWidget = _holidayColumn(dayName, tooltip: tooltipText);
+                                        } else if (isWeeklyOff) {
+                                          barWidget = _dayOffColumn(dayName, tooltip: tooltipText);
+                                        } else {
+                                          double heightFactor = 0.08;
+                                          barWidget = _barColumn(
+                                            dayName,
+                                            heightFactor,
+                                            isDark,
+                                            tooltip: tooltipText,
+                                          );
                                         }
-                                        if (isWeekend) {
-                                          return _dayOffColumn(dayName);
-                                        }
+                                      } else {
+                                        double heightFactor = (dayMins / 600.0).clamp(0.08, 1.0);
+                                        barWidget = _barColumn(
+                                          dayName,
+                                          heightFactor,
+                                          isDark,
+                                          tooltip: tooltipText,
+                                        );
                                       }
 
-                                      double heightFactor = (dayMins / 600.0).clamp(0.08, 1.0);
-                                      bool isMaxDay = (idx == maxDayIdx && dayMins > 0);
-                                      String? tooltipText = isMaxDay ? '${dayMins ~/ 60}:${(dayMins % 60).toString().padLeft(2, '0')}h' : null;
-
-                                      return _barColumn(
-                                        dayName,
-                                        heightFactor,
-                                        isDark,
-                                        tooltip: tooltipText,
+                                      return GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onTap: () {
+                                          setState(() {
+                                            if (_selectedWeeklyBarIdx == idx) {
+                                              _selectedWeeklyBarIdx = null;
+                                            } else {
+                                              _selectedWeeklyBarIdx = idx;
+                                            }
+                                          });
+                                        },
+                                        onLongPress: () {
+                                          setState(() {
+                                            _selectedWeeklyBarIdx = idx;
+                                          });
+                                        },
+                                        child: barWidget,
                                       );
                                     }),
                                   ),
@@ -924,160 +947,188 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
         }
       },
       child: Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: bgCard,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: borderCol),
-      ),
-      child: Column(
-        children: [
-          // Header: Month Navigation, Legend Toggle & Days Badge (26th to 25th cycle)
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 0),
+        decoration: BoxDecoration(
+          color: bgCard,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: borderCol),
+        ),
+        child: Column(
+          children: [
+            // Header: Month Navigation, Legend Toggle & Days Badge (26th to 25th cycle)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  IconButton(
-                    icon: Icon(Icons.chevron_left_rounded, color: textPrimary),
-                    onPressed: () {
-                      setState(() {
-                        _selectedMonth = DateTime(_selectedMonth.year, _selectedMonth.month - 1, 1);
-                      });
-                    },
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(DateFormat('MMMM yyyy').format(_selectedMonth),
-                          style: TextStyle(color: textPrimary, fontSize: 17, fontWeight: FontWeight.w800, letterSpacing: -0.4)),
-                      Text('${DateFormat('d MMM').format(_cycleStartDate)} – ${DateFormat('d MMM').format(_cycleEndDate)}',
-                          style: TextStyle(color: textSecondary, fontSize: 11, fontWeight: FontWeight.w600)),
-                    ],
-                  ),
-                  IconButton(
-                    icon: Icon(Icons.chevron_right_rounded, color: textPrimary),
-                    onPressed: () {
-                      setState(() {
-                        _selectedMonth = DateTime(_selectedMonth.year, _selectedMonth.month + 1, 1);
-                      });
-                    },
-                  ),
-                ],
-              ),
-              Row(
-                children: [
-                  InkWell(
-                    onTap: () => setState(() => _showLegend = !_showLegend),
-                    borderRadius: BorderRadius.circular(16),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: _showLegend
-                            ? (isDark ? const Color(0xFF261D12) : const Color(0xFFFFECC8))
-                            : (isDark ? const Color(0xFF1F2633) : const Color(0xFFF0F4FD)),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: _showLegend ? const Color(0xFF895100).withAlpha(80) : borderCol.withAlpha(80),
+                  Flexible(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          icon: Icon(Icons.chevron_left_rounded, color: textPrimary),
+                          onPressed: () {
+                            setState(() {
+                              _selectedMonth = DateTime(_selectedMonth.year, _selectedMonth.month - 1, 1);
+                            });
+                          },
                         ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            _showLegend ? Icons.info_rounded : Icons.info_outline_rounded,
-                            size: 13,
-                            color: _showLegend ? const Color(0xFF895100) : textSecondary,
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                DateFormat('MMMM yyyy').format(_selectedMonth),
+                                style: TextStyle(color: textPrimary, fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: -0.4),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              Text(
+                                '${DateFormat('d MMM').format(_cycleStartDate)} – ${DateFormat('d MMM').format(_cycleEndDate)}',
+                                style: TextStyle(color: textSecondary, fontSize: 10.5, fontWeight: FontWeight.w600),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 3),
-                          Text(
-                            'Legend',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: _showLegend ? const Color(0xFF895100) : textSecondary,
+                        ),
+                        const SizedBox(width: 4),
+                        IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          icon: Icon(Icons.chevron_right_rounded, color: textPrimary),
+                          onPressed: () {
+                            setState(() {
+                              _selectedMonth = DateTime(_selectedMonth.year, _selectedMonth.month + 1, 1);
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      InkWell(
+                        onTap: () => setState(() => _showLegend = !_showLegend),
+                        borderRadius: BorderRadius.circular(16),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: _showLegend
+                                ? (isDark ? const Color(0xFF261D12) : const Color(0xFFFFECC8))
+                                : (isDark ? const Color(0xFF1F2633) : const Color(0xFFF0F4FD)),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: _showLegend ? const Color(0xFF895100).withAlpha(80) : borderCol.withAlpha(80),
                             ),
                           ),
-                          Icon(
-                            _showLegend ? Icons.arrow_drop_up : Icons.arrow_drop_down,
-                            size: 14,
-                            color: _showLegend ? const Color(0xFF895100) : textSecondary,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                _showLegend ? Icons.info_rounded : Icons.info_outline_rounded,
+                                size: 12,
+                                color: _showLegend ? const Color(0xFF895100) : textSecondary,
+                              ),
+                              const SizedBox(width: 2),
+                              Text(
+                                'Legend',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: _showLegend ? const Color(0xFF895100) : textSecondary,
+                                ),
+                              ),
+                              Icon(
+                                _showLegend ? Icons.arrow_drop_up : Icons.arrow_drop_down,
+                                size: 13,
+                                color: _showLegend ? const Color(0xFF895100) : textSecondary,
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: isDark ? const Color(0xFF1F2633) : const Color(0xFFF0F4FD),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Text('${cycleDays.length} Days', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: textSecondary)),
+                      const SizedBox(width: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF1F2633) : const Color(0xFFF0F4FD),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Text('${cycleDays.length} Days', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: textSecondary)),
+                      ),
+                    ],
                   ),
                 ],
+              ),
+            ),
+
+            // Collapsible / Expandable Legend Status Bar
+            if (_showLegend) ...[
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF161C28) : const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: borderCol),
+                  ),
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      _legendPill('Present (P)', isDark ? const Color(0xFF11221E) : const Color(0xFFE8F8F0), isDark ? const Color(0xFF34D399) : const Color(0xFF146C43)),
+                      _legendPill('Half (P:A/A:P)', isDark ? const Color(0xFF241C14) : const Color(0xFFFFF3E0), isDark ? const Color(0xFFFBA442) : const Color(0xFF895100)),
+                      _legendPill('Absent (A)', isDark ? const Color(0xFF2B1618) : const Color(0xFFFFDAD6), isDark ? const Color(0xFFF87171) : const Color(0xFFBA1A1A)),
+                      _legendPill('Earned Leave (EL)', isDark ? const Color(0xFF26151B) : const Color(0xFFFDEBF3), isDark ? const Color(0xFFFB7185) : const Color(0xFFB91C68)),
+                      _legendPill('Loss of Pay (LP)', isDark ? const Color(0xFF2E1A1A) : const Color(0xFFFFECEB), isDark ? const Color(0xFFFF6B6B) : const Color(0xFFC92A2A)),
+                      _legendPill('Comp-Off (CO)', isDark ? const Color(0xFF201B2E) : const Color(0xFFF3E8FF), isDark ? const Color(0xFFA855F7) : const Color(0xFF7E22CE)),
+                      _legendPill('Holiday (H)', isDark ? const Color(0xFF132235) : const Color(0xFFE6F4FB), isDark ? const Color(0xFF38BDF8) : const Color(0xFF0C7AA6)),
+                      _legendPill('Off Duty (Off)', isDark ? const Color(0xFF161C28) : const Color(0xFFF0F3F8), isDark ? const Color(0xFF94A3B8) : textSecondary),
+                    ],
+                  ),
+                ),
               ),
             ],
-          ),
+            const SizedBox(height: 14),
 
-          // Collapsible / Expandable Legend Status Bar
-          if (_showLegend) ...[
-            const SizedBox(height: 12),
+            // Days Header (Sun - Sat) - Edge to Edge
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              padding: const EdgeInsets.symmetric(vertical: 8),
               decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF161C28) : const Color(0xFFF8FAFC),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: borderCol),
+                color: isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF0F4FD),
+                border: Border(
+                  top: BorderSide(color: gridBorderCol, width: 0.5),
+                  bottom: BorderSide(color: gridBorderCol, width: 0.5),
+                ),
               ),
-              child: Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                alignment: WrapAlignment.center,
-                children: [
-                  _legendPill('Present (P)', isDark ? const Color(0xFF11221E) : const Color(0xFFE8F8F0), isDark ? const Color(0xFF34D399) : const Color(0xFF146C43)),
-                  _legendPill('Half (P:A/A:P)', isDark ? const Color(0xFF241C14) : const Color(0xFFFFF3E0), isDark ? const Color(0xFFFBA442) : const Color(0xFF895100)),
-                  _legendPill('Absent (A)', isDark ? const Color(0xFF2B1618) : const Color(0xFFFFDAD6), isDark ? const Color(0xFFF87171) : const Color(0xFFBA1A1A)),
-                  _legendPill('Earned Leave (EL)', isDark ? const Color(0xFF26151B) : const Color(0xFFFDEBF3), isDark ? const Color(0xFFFB7185) : const Color(0xFFB91C68)),
-                  _legendPill('Loss of Pay (LP)', isDark ? const Color(0xFF2E1A1A) : const Color(0xFFFFECEB), isDark ? const Color(0xFFFF6B6B) : const Color(0xFFC92A2A)),
-                  _legendPill('Comp-Off (CO)', isDark ? const Color(0xFF201B2E) : const Color(0xFFF3E8FF), isDark ? const Color(0xFFA855F7) : const Color(0xFF7E22CE)),
-                  _legendPill('Holiday (H)', isDark ? const Color(0xFF132235) : const Color(0xFFE6F4FB), isDark ? const Color(0xFF38BDF8) : const Color(0xFF0C7AA6)),
-                  _legendPill('Off Duty (Off)', isDark ? const Color(0xFF161C28) : const Color(0xFFF0F3F8), isDark ? const Color(0xFF94A3B8) : textSecondary),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(height: 14),
-
-          // Days Header (Sun - Sat)
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF0F4FD),
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) {
-                return SizedBox(
-                  width: 36,
-                  child: Text(day,
+              child: Row(
+                children: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) {
+                  return Expanded(
+                    child: Text(
+                      day,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: textSecondary, fontWeight: FontWeight.w700, fontSize: 12)),
-                );
-              }).toList(),
-            ),
-          ),
-
-          // Seamless Flush Table Grid
-          ClipRRect(
-            borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
-            child: Container(
-              decoration: BoxDecoration(
-                border: Border.all(color: gridBorderCol, width: 0.5),
+                      style: TextStyle(color: textSecondary, fontWeight: FontWeight.w700, fontSize: 11.5),
+                    ),
+                  );
+                }).toList(),
               ),
+            ),
+
+            // Seamless Flush Table Grid - Edge to Edge
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(bottom: Radius.circular(20)),
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: gridBorderCol, width: 0.5),
+                ),
               child: GridView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
@@ -1246,12 +1297,12 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     subTag = 'WEEK';
                     bg = isDark ? const Color(0xFF161C28) : const Color(0xFFF0F3F8);
                     tagColor = isDark ? const Color(0xFF64748B) : textSecondary;
-                  } else if (totalMins >= 540 || (hasSession1 && hasSession2)) {
+                  } else if (totalMins >= 530) {
                     mainTag = 'P';
                     subTag = 'GEN';
                     bg = isDark ? const Color(0xFF11221E) : const Color(0xFFE8F5E9);
                     tagColor = isDark ? const Color(0xFF34D399) : const Color(0xFF146C43);
-                  } else if (totalMins > 0) {
+                  } else if (totalMins >= 240) {
                     if (hasSession1 && !hasSession2) {
                       mainTag = 'P:A';
                       subTag = 'HALF';
@@ -1502,10 +1553,13 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
         if (co != null && co.hour >= 17) hasSession2 = true;
       }
 
-      // Full day is achieved whenever employee completes standard 9 hours (540 mins) or more, regardless of arrival/start time
-      final bool isFullDayCompleted = totalMinsAllShifts >= 540;
-      // Half day should ONLY be flagged when shift has finished (user clocked out) and worked less than standard 9 hours (540 mins)
-      final isHalfDay = !isOffDay && !isShiftActive && lastCo != null && !isFullDayCompleted && totalMinsAllShifts > 0;
+      // Standard shift is 9 hours (540 mins). With 10-minute grace buffer (530 mins / 8h 50m), employee gets Full Day!
+      const int fullDayThresholdMins = 530; // 540 - 10 min buffer
+      const int halfDayThresholdMins = 240; // 4 hours
+
+      final bool isFullDayCompleted = totalMinsAllShifts >= fullDayThresholdMins;
+      // Half day should ONLY be flagged when shift has finished (user clocked out) and worked between 4h and 8h 50m
+      final isHalfDay = !isOffDay && !isShiftActive && lastCo != null && !isFullDayCompleted && totalMinsAllShifts >= halfDayThresholdMins;
 
       final hrsStr = '${(totalMinsAllShifts ~/ 60).toString().padLeft(2, '0')}:${(totalMinsAllShifts % 60).toString().padLeft(2, '0')}';
       final otMins = totalMinsAllShifts > 540 ? (totalMinsAllShifts - 540) : 0;
@@ -1753,23 +1807,23 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                                 Icon(
                                   isShiftActive
                                       ? Icons.timelapse_rounded
-                                      : (totalMinsAllShifts >= 540 ? Icons.check_rounded : Icons.info_outline_rounded),
+                                      : (isFullDayCompleted ? Icons.check_rounded : Icons.info_outline_rounded),
                                   size: 12,
                                   color: isShiftActive
                                       ? const Color(0xFF16A34A)
-                                      : (totalMinsAllShifts >= 540 ? const Color(0xFF146C43) : textSecondary),
+                                      : (isFullDayCompleted ? const Color(0xFF146C43) : textSecondary),
                                 ),
                                 const SizedBox(width: 4),
                                 Text(
                                   isShiftActive
                                       ? 'Shift in progress'
-                                      : (totalMinsAllShifts >= 540 ? 'Standard hours met' : (isHalfDay ? 'Half day logged' : 'Shift in progress')),
+                                      : (isFullDayCompleted ? 'Standard hours met' : (isHalfDay ? 'Half day logged' : 'Shift in progress')),
                                   style: TextStyle(
                                     fontSize: 10,
                                     fontWeight: FontWeight.w700,
                                     color: isShiftActive
                                         ? const Color(0xFF16A34A)
-                                        : (totalMinsAllShifts >= 540 ? const Color(0xFF146C43) : textSecondary),
+                                        : (isFullDayCompleted ? const Color(0xFF146C43) : textSecondary),
                                   ),
                                 ),
                               ],
@@ -1901,7 +1955,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                       _timelineTile(
                         Icons.login_rounded,
                         'Punch In$sessNum',
-                        s['location'] != null ? 'GPS • ${s['location']}' : 'GPS Verified • Main Gate',
+                        _formatPunchInLocation(s),
                         inTimeStr,
                         inAmpmStr,
                         const Color(0xFF9FF1BD),
@@ -1916,7 +1970,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                         _timelineTile(
                           Icons.logout_rounded,
                           'Punch Out$sessNum',
-                          'Biometric + Beacon verified',
+                          _formatPunchOutLocation(s),
                           outTimeStr,
                           outAmpmStr,
                           const Color(0xFFFFDBCC),
@@ -2985,6 +3039,43 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     );
   }
 
+  String _formatPunchInLocation(Map<String, dynamic> s) {
+    final explicit = s['clock_in_location'] ?? s['punch_in_location'];
+    if (explicit != null && explicit.toString().trim().isNotEmpty) {
+      return explicit.toString();
+    }
+    final loc = s['location']?.toString() ?? '';
+    if (loc.contains('In #')) {
+      final m = RegExp(r'In #(\d+)').firstMatch(loc);
+      if (m != null) return 'Biometric Machine #${m.group(1)}';
+    }
+    if (loc.isNotEmpty) {
+      if (loc.startsWith('Biometric Machine')) return 'Biometric Machine';
+      return loc;
+    }
+    return 'Monarch House (HQ)';
+  }
+
+  String _formatPunchOutLocation(Map<String, dynamic> s) {
+    final explicit = s['clock_out_location'] ?? s['punch_out_location'];
+    if (explicit != null && explicit.toString().trim().isNotEmpty) {
+      return explicit.toString();
+    }
+    final loc = s['location']?.toString() ?? '';
+    if (loc.contains('Out #')) {
+      final m = RegExp(r'Out #(\d+)').firstMatch(loc);
+      if (m != null) return 'Biometric Machine #${m.group(1)}';
+    } else if (loc.contains('In #')) {
+      final m = RegExp(r'In #(\d+)').firstMatch(loc);
+      if (m != null) return 'Biometric Machine #${m.group(1)}';
+    }
+    if (loc.isNotEmpty) {
+      if (loc.startsWith('Biometric Machine')) return 'Biometric Machine';
+      return loc;
+    }
+    return 'Monarch House (HQ)';
+  }
+
   Widget _legendPill(String label, Color bg, Color textCol) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -3424,11 +3515,22 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     );
   }
 
-  Widget _holidayColumn(String day) {
+  Widget _holidayColumn(String day, {String? tooltip}) {
     final isDark = themeController.isDarkMode;
     return Column(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
+        if (tooltip != null)
+          Container(
+            margin: const EdgeInsets.only(bottom: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E2638) : const Color(0xFF2C3138),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(tooltip,
+                style: const TextStyle(color: Color(0xFFEDF1FB), fontSize: 9, fontWeight: FontWeight.w800)),
+          ),
         Container(
           width: 24,
           height: 110,
@@ -3463,11 +3565,22 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     );
   }
 
-  Widget _dayOffColumn(String day) {
+  Widget _dayOffColumn(String day, {String? tooltip}) {
     final isDark = themeController.isDarkMode;
     return Column(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
+        if (tooltip != null)
+          Container(
+            margin: const EdgeInsets.only(bottom: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E2638) : const Color(0xFF2C3138),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(tooltip,
+                style: const TextStyle(color: Color(0xFFEDF1FB), fontSize: 9, fontWeight: FontWeight.w800)),
+          ),
         Container(
           width: 24,
           height: 110,
@@ -3509,8 +3622,56 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     final bldg = s['nearest_building'] ?? 'Monarch House (HQ)';
     final dist = isPunchIn ? s['distance_meters'] : s['clock_out_distance_meters'];
 
+    final locStr = s['location']?.toString() ?? '';
+    final isBiometric = locStr.contains('Biometric Machine') ||
+        (s['clock_in_location']?.toString().contains('Biometric Machine') ?? false) ||
+        (s['clock_out_location']?.toString().contains('Biometric Machine') ?? false);
+
     if (status == 'Approved') {
-      if (inGeofence || (dist != null && dist <= 20)) {
+      if (isBiometric) {
+        String devLabel = 'Biometric Machine';
+        if (isPunchIn) {
+          final mIn = RegExp(r'In #(\d+)').firstMatch(locStr);
+          if (mIn != null) {
+            devLabel = 'Biometric Machine #${mIn.group(1)}';
+          }
+        } else {
+          final mOut = RegExp(r'Out #(\d+)').firstMatch(locStr);
+          if (mOut != null) {
+            devLabel = 'Biometric Machine #${mOut.group(1)}';
+          } else {
+            final mIn = RegExp(r'In #(\d+)').firstMatch(locStr);
+            if (mIn != null) devLabel = 'Biometric Machine #${mIn.group(1)}';
+          }
+        }
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.fingerprint_rounded, size: 13, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
+              const SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  '🏢 Biometric Verified • $devLabel',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      } else if (inGeofence || (dist != null && dist <= 20)) {
         return Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           decoration: BoxDecoration(

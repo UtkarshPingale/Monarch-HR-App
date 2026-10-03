@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1042,6 +1043,74 @@ class _EngageTabState extends State<EngageTab> {
             ),
           ),
 
+          const SizedBox(height: 20),
+
+          // ── Account Security & Password Change ──────────────────────────────
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: bgCard,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: borderCol),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withAlpha(isDark ? 30 : 6),
+                  blurRadius: 14,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: amberPrimary.withAlpha(isDark ? 40 : 25),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.shield_outlined, color: amberDark, size: 20),
+                        ),
+                        const SizedBox(width: 10),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Account Security',
+                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.3)),
+                            Text('Change password via email OTP verification',
+                                style: TextStyle(fontSize: 11, color: textSecondary)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _openChangePasswordSheet(context),
+                    icon: const Icon(Icons.lock_reset_rounded, size: 18),
+                    label: const Text('Change Password with OTP'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: amberDark,
+                      side: BorderSide(color: amberPrimary.withAlpha(140)),
+                      backgroundColor: amberPrimary.withAlpha(isDark ? 25 : 15),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
           const SizedBox(height: 24),
 
           // ── Log Out Action ────────────────────────────────────────────────
@@ -1310,4 +1379,543 @@ class _EngageTabState extends State<EngageTab> {
       ),
     );
   }
+
+  void _openChangePasswordSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => _PasswordChangeSheet(
+        token: widget.token,
+        email: (_currentUser['personal_email'] ?? _currentUser['email'] ?? '').toString(),
+      ),
+    );
+  }
 }
+
+// ── Password Change with OTP Bottom Sheet ────────────────────────────────────
+class _PasswordChangeSheet extends StatefulWidget {
+  final String token;
+  final String email;
+
+  const _PasswordChangeSheet({
+    required this.token,
+    required this.email,
+  });
+
+  @override
+  State<_PasswordChangeSheet> createState() => _PasswordChangeSheetState();
+}
+
+class _PasswordChangeSheetState extends State<_PasswordChangeSheet> {
+  int _step = 1; // 1 = Request OTP, 2 = Enter OTP & New Password
+  String _otpToken = '';
+  String _maskedEmail = '';
+
+  final TextEditingController _otpCtrl = TextEditingController();
+  final TextEditingController _newPasswordCtrl = TextEditingController();
+  final TextEditingController _confirmPasswordCtrl = TextEditingController();
+
+  bool _isSendingOtp = false;
+  bool _isVerifying = false;
+  bool _obscureNew = true;
+  bool _obscureConfirm = true;
+
+  int _resendCooldown = 0;
+  Timer? _cooldownTimer;
+
+  @override
+  void dispose() {
+    _cooldownTimer?.cancel();
+    _otpCtrl.dispose();
+    _newPasswordCtrl.dispose();
+    _confirmPasswordCtrl.dispose();
+    super.dispose();
+  }
+
+  void _startCooldown() {
+    _cooldownTimer?.cancel();
+    setState(() => _resendCooldown = 60);
+    _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_resendCooldown <= 1) {
+        timer.cancel();
+        if (mounted) setState(() => _resendCooldown = 0);
+      } else {
+        if (mounted) setState(() => _resendCooldown--);
+      }
+    });
+  }
+
+  Future<void> _sendOtp() async {
+    setState(() => _isSendingOtp = true);
+    final messenger = ScaffoldMessenger.of(context);
+
+    try {
+      final res = await apiPost('/api/auth/send-password-otp', {}, token: widget.token);
+      if (res['success'] == true) {
+        setState(() {
+          _otpToken = res['otp_token']?.toString() ?? '';
+          _maskedEmail = res['masked_email']?.toString() ?? widget.email;
+          _step = 2;
+        });
+        _startCooldown();
+        messenger.showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.mark_email_read_rounded, color: Colors.white, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    res['message']?.toString() ?? 'OTP sent to your registered email!',
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: const Color(0xFF16A34A),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        );
+      } else {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(res['error']?.toString() ?? 'Could not send verification OTP.'),
+            backgroundColor: const Color(0xFFDC2626),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Network error. Failed to reach verification server.'),
+          backgroundColor: Color(0xFFDC2626),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isSendingOtp = false);
+    }
+  }
+
+  Future<void> _verifyAndChangePassword() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final otp = _otpCtrl.text.trim();
+    final newPassword = _newPasswordCtrl.text.trim();
+    final confirmPassword = _confirmPasswordCtrl.text.trim();
+
+    if (otp.length != 6) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Please enter the 6-digit OTP code received on your email.'),
+          backgroundColor: Color(0xFFDC2626),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('New password must be at least 6 characters long.'),
+          backgroundColor: Color(0xFFDC2626),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    if (newPassword != confirmPassword) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Passwords do not match. Please re-enter.'),
+          backgroundColor: Color(0xFFDC2626),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isVerifying = true);
+
+    try {
+      final res = await apiPost('/api/auth/verify-password-otp-change', {
+        'otp': otp,
+        'otp_token': _otpToken,
+        'new_password': newPassword,
+      });
+
+      if (res['success'] == true) {
+        if (mounted) {
+          Navigator.of(context).pop();
+        }
+        messenger.showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    res['message']?.toString() ?? '🎉 Password changed successfully!',
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: const Color(0xFF16A34A),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        );
+      } else {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(res['error']?.toString() ?? 'Verification failed.'),
+            backgroundColor: const Color(0xFFDC2626),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Network error. Failed to update password.'),
+          backgroundColor: Color(0xFFDC2626),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isVerifying = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = themeController.isDarkMode;
+    final bgCard = isDark ? const Color(0xFF131722) : Colors.white;
+    final bgInput = isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF0F4FD);
+    final borderCol = isDark ? const Color(0xFF1F2633) : const Color(0xFFEAEFF8);
+    final textPrimary = isDark ? Colors.white : const Color(0xFF171C23);
+    final textSecondary = isDark ? const Color(0xFF9CA3AF) : const Color(0xFF524437);
+    const amberPrimary = Color(0xFFF5A952);
+    const amberDark = Color(0xFF895100);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: bgCard,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha(60),
+            blurRadius: 30,
+            offset: const Offset(0, -4),
+          ),
+        ],
+      ),
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 14,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Drag Handle
+          Center(
+            child: Container(
+              width: 44,
+              height: 4,
+              decoration: BoxDecoration(
+                color: borderCol,
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Header
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: amberPrimary.withAlpha(isDark ? 40 : 25),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.lock_outline_rounded, color: amberDark, size: 20),
+                  ),
+                  const SizedBox(width: 10),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _step == 1 ? 'Change Password' : 'Enter Verification OTP',
+                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: textPrimary),
+                      ),
+                      Text(
+                        _step == 1 ? 'Security OTP Verification' : 'Step 2 of 2: Create New Password',
+                        style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              IconButton(
+                onPressed: () => Navigator.of(context).pop(),
+                icon: Icon(Icons.close_rounded, color: textSecondary, size: 20),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+
+          if (_step == 1) ...[
+            // STEP 1: Request OTP
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: bgInput,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: borderCol),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.mail_lock_rounded, size: 18, color: amberDark),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Registered Employee Email',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: textSecondary, letterSpacing: 0.6),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    widget.email.isNotEmpty ? widget.email : 'Your registered corporate email',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textPrimary),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'A 6-digit One-Time Password (OTP) will be sent from monarchtbc04@gmail.com to verify your identity.',
+                    style: TextStyle(fontSize: 11.5, color: textSecondary, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _isSendingOtp ? null : _sendOtp,
+                icon: _isSendingOtp
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: amberDark),
+                      )
+                    : const Icon(Icons.send_rounded, size: 18),
+                label: Text(_isSendingOtp ? 'Sending OTP to Email...' : 'Send Verification OTP'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: amberPrimary,
+                  foregroundColor: amberDark,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                  elevation: 0,
+                  textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+                ),
+              ),
+            ),
+          ] else ...[
+            // STEP 2: Enter OTP & New Password
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF16A34A).withAlpha(isDark ? 30 : 15),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF16A34A).withAlpha(60)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.mark_email_read_rounded, size: 16, color: Color(0xFF16A34A)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'OTP sent to $_maskedEmail',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF16A34A)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // OTP Input Field
+            Text(
+              '6-DIGIT OTP CODE',
+              style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: textSecondary, letterSpacing: 0.8),
+            ),
+            const SizedBox(height: 6),
+            Container(
+              height: 48,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: bgInput,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: borderCol),
+              ),
+              child: Center(
+                child: TextField(
+                  controller: _otpCtrl,
+                  keyboardType: TextInputType.number,
+                  maxLength: 6,
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: 4),
+                  decoration: const InputDecoration(
+                    counterText: '',
+                    border: InputBorder.none,
+                    isDense: true,
+                    hintText: 'Enter 6-digit OTP',
+                    hintStyle: TextStyle(letterSpacing: 0, fontSize: 13),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // New Password Field
+            Text(
+              'NEW PASSWORD',
+              style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: textSecondary, letterSpacing: 0.8),
+            ),
+            const SizedBox(height: 6),
+            Container(
+              height: 48,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: bgInput,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: borderCol),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _newPasswordCtrl,
+                      obscureText: _obscureNew,
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textPrimary),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        isDense: true,
+                        hintText: 'Minimum 6 characters',
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(_obscureNew ? Icons.visibility_off_rounded : Icons.visibility_rounded, size: 18, color: textSecondary),
+                    onPressed: () => setState(() => _obscureNew = !_obscureNew),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // Confirm Password Field
+            Text(
+              'CONFIRM NEW PASSWORD',
+              style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: textSecondary, letterSpacing: 0.8),
+            ),
+            const SizedBox(height: 6),
+            Container(
+              height: 48,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: bgInput,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: borderCol),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _confirmPasswordCtrl,
+                      obscureText: _obscureConfirm,
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textPrimary),
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                        isDense: true,
+                        hintText: 'Re-enter new password',
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(_obscureConfirm ? Icons.visibility_off_rounded : Icons.visibility_rounded, size: 18, color: textSecondary),
+                    onPressed: () => setState(() => _obscureConfirm = !_obscureConfirm),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Resend OTP / Cooldown
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                TextButton(
+                  onPressed: _resendCooldown > 0 || _isSendingOtp ? null : _sendOtp,
+                  child: Text(
+                    _resendCooldown > 0 ? 'Resend OTP in ${_resendCooldown}s' : 'Resend OTP Code',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: _resendCooldown > 0 ? textSecondary : amberDark,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => setState(() => _step = 1),
+                  child: Text('Change Email', style: TextStyle(fontSize: 12, color: textSecondary)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+
+            // Submit Button
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _isVerifying ? null : _verifyAndChangePassword,
+                icon: _isVerifying
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: amberDark),
+                      )
+                    : const Icon(Icons.check_circle_rounded, size: 18),
+                label: Text(_isVerifying ? 'Updating Password...' : 'Verify OTP & Update Password'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: amberPrimary,
+                  foregroundColor: amberDark,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                  elevation: 0,
+                  textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+

@@ -46,6 +46,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
   Timer? _autoSyncTimer;
   DateTime _now = DateTime.now();
   List<dynamic> _myRecords = [];
+  late Map<String, dynamic> _currentUser;
 
   // Real Leave Data from PostgreSQL
   double _remainingLeaves = 19.5;
@@ -55,9 +56,11 @@ class HomeScreenTabState extends State<HomeScreenTab> {
   @override
   void initState() {
     super.initState();
+    _currentUser = Map<String, dynamic>.from(widget.user);
     themeController.addListener(_onThemeChanged);
     _checkStatus();
     _fetchData();
+    _fetchFreshProfile();
     _fetchLeavesData();
     _fetchTeamApprovalsCount();
     _timeTicker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -70,6 +73,27 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         _fetchTeamApprovalsCount();
       }
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant HomeScreenTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.user != oldWidget.user) {
+      setState(() {
+        _currentUser = Map<String, dynamic>.from(widget.user);
+      });
+    }
+  }
+
+  Future<void> _fetchFreshProfile() async {
+    try {
+      final res = await apiGetJson('/api/user/profile', token: widget.token);
+      if (res is Map<String, dynamic> && res['id'] != null && mounted) {
+        setState(() {
+          _currentUser = Map<String, dynamic>.from(res);
+        });
+      }
+    } catch (_) {}
   }
 
   @override
@@ -86,6 +110,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
       await Future.wait([
         _checkStatus(),
         _fetchData(),
+        _fetchFreshProfile(),
         _fetchLeavesData(),
         _fetchTeamApprovalsCount(),
       ]);
@@ -324,6 +349,184 @@ class HomeScreenTabState extends State<HomeScreenTab> {
     setState(() => _loading = false);
   }
 
+  Future<void> _handleCheckInPress(List<dynamic> todayRecords, bool isDark, Color textPrimary, Color textSecondary, Color amberPrimary) async {
+    final completedShifts = todayRecords.where((r) => r['clock_in'] != null && r['clock_out'] != null).toList();
+
+    if (completedShifts.isNotEmpty) {
+      final firstIn = parseAppDateTime(completedShifts.first['clock_in']);
+      final lastOut = parseAppDateTime(completedShifts.last['clock_out']);
+      final firstInStr = firstIn != null ? DateFormat('hh:mm a').format(firstIn.toLocal()) : '--:--';
+      final lastOutStr = lastOut != null ? DateFormat('hh:mm a').format(lastOut.toLocal()) : '--:--';
+
+      final bool? proceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: isDark ? const Color(0xFF1B202D) : Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF59E0B).withAlpha(30),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.info_outline_rounded, color: Color(0xFFF59E0B), size: 22),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Already Punched Today',
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'You have already completed your punch in and punch out for today:',
+                style: TextStyle(fontSize: 13, height: 1.4),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF131722) : const Color(0xFFF3F4F6),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: isDark ? const Color(0xFF1F2633) : const Color(0xFFE5E7EB)),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('• First Punch In:', style: TextStyle(fontSize: 12.5, color: textSecondary, fontWeight: FontWeight.w600)),
+                        Text(firstInStr, style: TextStyle(fontSize: 13, color: textPrimary, fontWeight: FontWeight.w800)),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('• Last Punch Out:', style: TextStyle(fontSize: 12.5, color: textSecondary, fontWeight: FontWeight.w600)),
+                        Text(lastOutStr, style: TextStyle(fontSize: 13, color: textPrimary, fontWeight: FontWeight.w800)),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Did you click by mistake? Do you want to Check In again for a new session / overtime?',
+                style: TextStyle(fontSize: 12.5, height: 1.4, fontWeight: FontWeight.w500),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text('Cancel', style: TextStyle(fontWeight: FontWeight.w600, color: textSecondary)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: amberPrimary,
+                foregroundColor: const Color(0xFF6B3F00),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 0,
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Yes, Check In', style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+          ],
+        ),
+      );
+
+      if (proceed != true) return;
+    }
+
+    await _clockIn();
+  }
+
+  Future<void> _handleCheckOutPress(bool isDark, Color textPrimary, Color textSecondary, String displayCheckIn) async {
+    final bool? proceed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1B202D) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE11D48).withAlpha(30),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.logout_rounded, color: Color(0xFFE11D48), size: 22),
+            ),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text(
+                'Confirm Check Out',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Are you sure you want to punch out and end your active shift?',
+              style: TextStyle(fontSize: 13, height: 1.4),
+            ),
+            if (displayCheckIn != '-- : --') ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF131722) : const Color(0xFFF3F4F6),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: isDark ? const Color(0xFF1F2633) : const Color(0xFFE5E7EB)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('• Current Check-In:', style: TextStyle(fontSize: 12.5, color: textSecondary, fontWeight: FontWeight.w600)),
+                    Text(displayCheckIn, style: TextStyle(fontSize: 13, color: textPrimary, fontWeight: FontWeight.w800)),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Cancel', style: TextStyle(fontWeight: FontWeight.w600, color: textSecondary)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFE11D48),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              elevation: 0,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Yes, Check Out', style: TextStyle(fontWeight: FontWeight.w800)),
+          ),
+        ],
+      ),
+    );
+
+    if (proceed == true) {
+      await _clockOut();
+    }
+  }
+
   String _getTodayWorkingHrsString(List<dynamic> todayRecords) {
     int completedSecs = 0;
     for (var r in todayRecords) {
@@ -361,8 +564,24 @@ class HomeScreenTabState extends State<HomeScreenTab> {
     const amberPrimary = Color(0xFFF5A952);
     const amberDark = Color(0xFF895100);
 
-    final fullName = widget.user['name'] ?? 'Robert Smith';
-    final empId = widget.user['emp_id'] ?? 'EMP-84920';
+    final fullName = _currentUser['name'] ?? _currentUser['full_name'] ?? _currentUser['username'] ?? widget.user['name'] ?? 'Employee';
+    final empId = _currentUser['employee_no'] ?? _currentUser['emp_id'] ?? _currentUser['id'] ?? widget.user['emp_id'] ?? widget.user['id'] ?? '';
+    final dept = (_currentUser['department']?.toString() ?? widget.user['department']?.toString() ?? '').trim();
+    final desig = (_currentUser['designation']?.toString() ?? widget.user['designation']?.toString() ?? '').trim();
+    final role = (_currentUser['role']?.toString() ?? widget.user['role']?.toString() ?? '').trim();
+
+    String userSubtitle = '';
+    if (desig.isNotEmpty && dept.isNotEmpty) {
+      userSubtitle = '$desig • $dept';
+    } else if (desig.isNotEmpty) {
+      userSubtitle = desig;
+    } else if (dept.isNotEmpty) {
+      userSubtitle = dept;
+    } else if (role.isNotEmpty) {
+      userSubtitle = role;
+    } else {
+      userSubtitle = empId.toString().isNotEmpty ? 'Employee (#$empId)' : 'Employee';
+    }
 
     // Aggregate today's records
     final todayRecords = _myRecords.where((r) {
@@ -440,7 +659,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         if (ci.hour < 9 || (ci.hour == 9 && ci.minute <= 30)) {
           onTimeShifts++;
         }
-        if (mins >= 540) presentDaySet.add(ci.day);
+        if (mins >= 530) presentDaySet.add(ci.day);
       }
     }
     presentDays = presentDaySet.length;
@@ -574,8 +793,10 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          'UI/UX Designer • Product Team ($empId)',
+                          userSubtitle,
                           style: TextStyle(fontSize: 12, color: textSecondary, fontWeight: FontWeight.w500),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
@@ -782,7 +1003,15 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: _loading ? null : (_clockedIn ? _clockOut : _clockIn),
+                    onPressed: _loading
+                        ? null
+                        : () {
+                            if (_clockedIn) {
+                              _handleCheckOutPress(isDark, textPrimary, textSecondary, displayCheckIn);
+                            } else {
+                              _handleCheckInPress(todayRecords, isDark, textPrimary, textSecondary, amberPrimary);
+                            }
+                          },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: amberPrimary,
                       foregroundColor: const Color(0xFF6B3F00),
@@ -1214,7 +1443,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                                 ],
                               ),
                               const SizedBox(height: 2),
-                              Text(r['location'] != null ? 'GPS Verified • ${r['location']}' : 'HQ Main Gate • GPS verified',
+                              Text(_formatPunchInLocation(r),
                                   style: TextStyle(fontSize: 11, color: textSecondary)),
                             ],
                           ),
@@ -1270,7 +1499,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                                   ],
                                 ),
                                 const SizedBox(height: 2),
-                                Text('Biometric + Beacon verified', style: TextStyle(fontSize: 11, color: textSecondary)),
+                                Text(_formatPunchOutLocation(r), style: TextStyle(fontSize: 11, color: textSecondary)),
                               ],
                             ),
                           ),
@@ -1325,5 +1554,42 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         Text(day, style: TextStyle(fontSize: 9, color: isActive ? const Color(0xFF146C43) : const Color(0xFF9CA3AF), fontWeight: FontWeight.w700)),
       ],
     );
+  }
+
+  String _formatPunchInLocation(Map<String, dynamic> s) {
+    final explicit = s['clock_in_location'] ?? s['punch_in_location'];
+    if (explicit != null && explicit.toString().trim().isNotEmpty) {
+      return explicit.toString();
+    }
+    final loc = s['location']?.toString() ?? '';
+    if (loc.contains('In #')) {
+      final m = RegExp(r'In #(\d+)').firstMatch(loc);
+      if (m != null) return 'Biometric Machine #${m.group(1)}';
+    }
+    if (loc.isNotEmpty) {
+      if (loc.startsWith('Biometric Machine')) return 'Biometric Machine';
+      return 'GPS • $loc';
+    }
+    return 'GPS Verified • Main Gate';
+  }
+
+  String _formatPunchOutLocation(Map<String, dynamic> s) {
+    final explicit = s['clock_out_location'] ?? s['punch_out_location'];
+    if (explicit != null && explicit.toString().trim().isNotEmpty) {
+      return explicit.toString();
+    }
+    final loc = s['location']?.toString() ?? '';
+    if (loc.contains('Out #')) {
+      final m = RegExp(r'Out #(\d+)').firstMatch(loc);
+      if (m != null) return 'Biometric Machine #${m.group(1)}';
+    } else if (loc.contains('In #')) {
+      final m = RegExp(r'In #(\d+)').firstMatch(loc);
+      if (m != null) return 'Biometric Machine #${m.group(1)}';
+    }
+    if (loc.isNotEmpty) {
+      if (loc.startsWith('Biometric Machine')) return 'Biometric Machine';
+      return 'GPS • $loc';
+    }
+    return 'Biometric Machine';
   }
 }

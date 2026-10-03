@@ -29,26 +29,25 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
   // Project Selection
   String _selectedProjectId = '';
   String _selectedProjectName = '';
-  List<Map<String, String>> _projects = [
-    {'id': '456', 'name': 'FLS Preliminary & Final Location Survey'},
-    {'id': '135', 'name': 'MIDC Amravati Industrial Zone'},
-    {'id': '142', 'name': 'Metro Line 4 Survey & Alignment'},
-    {'id': '108', 'name': 'Highway NH-48 Expansion Section 3'},
-    {'id': '156', 'name': 'Smart City GIS Asset Mapping'},
-    {'id': '164', 'name': 'Port Logistics Warehouse Foundation'},
-    {'id': '177', 'name': 'Town Planning Boundary Demarcation'},
-    {'id': '201', 'name': 'FLS Railway Doubling & Electrification'},
-    {'id': '312', 'name': 'DPR Feasibility & Geological Mapping'},
-  ];
+  List<Map<String, String>> _projects = [];
 
   // Department & Task Hierarchy
-  String _selectedDepartment = 'Civil & Infrastructure';
+  String _selectedDepartment = 'Engineering';
   List<String> _departments = [
-    'Civil & Infrastructure',
-    'Survey & GIS Mapping',
-    'Structural & Architectural',
-    'Electrical & MEP',
-    'Project Management & QA',
+    'Engineering',
+    'Railway Engineering',
+    'Highway Engineering',
+    'GIS',
+    'Geospatial Technology',
+    'Geotech',
+    'CAD',
+    'Drone',
+    'IT Department',
+    'Field COE',
+    'Project',
+    'Traffic & Safety',
+    'Admin',
+    'Finance & Accounts',
   ];
 
   String _selectedTask = 'Subgrade Preparation & Excavation';
@@ -106,12 +105,12 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
   };
 
   // Output & Effort
-  final TextEditingController _qtyCtrl = TextEditingController(text: '14.8');
+  final TextEditingController _qtyCtrl = TextEditingController(text: '');
   String _selectedUnit = 'KM';
   List<String> _units = ['KM', 'M', 'Nos', 'Ton', 'SqM', 'CuM', 'Hrs', 'Points', 'Sheets', 'Days'];
 
-  final TextEditingController _hoursCtrl = TextEditingController(text: '4');
-  final TextEditingController _minutesCtrl = TextEditingController(text: '30');
+  final TextEditingController _hoursCtrl = TextEditingController(text: '');
+  final TextEditingController _minutesCtrl = TextEditingController(text: '');
 
   // Revision
   String _selectedRevision = 'Rev 0 — Initial Working Execution';
@@ -125,9 +124,7 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
   ];
 
   // Remarks (MANDATORY)
-  final TextEditingController _remarksCtrl = TextEditingController(
-    text: 'Completed laser benchmark verification alongside QA technician. Weather clear, ground conditions optimal.',
-  );
+  final TextEditingController _remarksCtrl = TextEditingController(text: '');
 
   final List<String> _quickChips = [
     '+ Delayed by weather',
@@ -396,16 +393,25 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
       'Material Handling & QA Signoff'
     ];
 
-    return Container(
-      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.92),
-      decoration: BoxDecoration(
-        color: bgSheet,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-        boxShadow: const [
-          BoxShadow(color: Color(0x33000000), blurRadius: 30, offset: Offset(0, -6)),
-        ],
-      ),
-      child: SafeArea(
+    final keyboardInset = MediaQuery.of(context).viewInsets.bottom;
+    final availableHeight = (MediaQuery.of(context).size.height * 0.92) - keyboardInset;
+
+    return AnimatedPadding(
+      padding: EdgeInsets.only(bottom: keyboardInset),
+      duration: const Duration(milliseconds: 100),
+      curve: Curves.easeOut,
+      child: Container(
+        constraints: BoxConstraints(
+          maxHeight: availableHeight > 250 ? availableHeight : 250,
+        ),
+        decoration: BoxDecoration(
+          color: bgSheet,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          boxShadow: const [
+            BoxShadow(color: Color(0x33000000), blurRadius: 30, offset: Offset(0, -6)),
+          ],
+        ),
+        child: SafeArea(
         child: Column(
           children: [
             // Handle Bar
@@ -692,11 +698,12 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
                                   child: TextField(
                                     controller: _qtyCtrl,
                                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                    scrollPadding: const EdgeInsets.only(bottom: 120),
                                     style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textPrimary),
                                     decoration: const InputDecoration(
                                       isDense: true,
                                       border: InputBorder.none,
-                                      hintText: 'Enter value',
+                                      hintText: '',
                                     ),
                                   ),
                                 ),
@@ -759,11 +766,12 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
                                       child: TextField(
                                         controller: _hoursCtrl,
                                         keyboardType: TextInputType.number,
+                                        scrollPadding: const EdgeInsets.only(bottom: 120),
                                         style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: textPrimary),
                                         decoration: const InputDecoration(
                                           isDense: true,
                                           border: InputBorder.none,
-                                          hintText: '0',
+                                          hintText: '',
                                         ),
                                         onChanged: (_) => setState(() {}),
                                       ),
@@ -793,11 +801,12 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
                                       child: TextField(
                                         controller: _minutesCtrl,
                                         keyboardType: TextInputType.number,
+                                        scrollPadding: const EdgeInsets.only(bottom: 120),
                                         style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: textPrimary),
                                         decoration: const InputDecoration(
                                           isDense: true,
                                           border: InputBorder.none,
-                                          hintText: '0',
+                                          hintText: '',
                                         ),
                                         onChanged: (_) => setState(() {}),
                                       ),
@@ -890,10 +899,11 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
                           child: TextField(
                             controller: _remarksCtrl,
                             maxLines: 3,
+                            scrollPadding: const EdgeInsets.only(bottom: 160),
                             style: TextStyle(fontSize: 12.5, color: textPrimary, height: 1.4),
                             decoration: const InputDecoration(
                               border: InputBorder.none,
-                              hintText: 'Enter work remarks / notes (Mandatory)...',
+                              hintText: '',
                             ),
                             onChanged: (_) => setState(() {}),
                           ),
@@ -984,8 +994,9 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _fieldHeader(IconData icon, String title, Color color) {
     return Row(
@@ -1050,10 +1061,18 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
     required Color amberDark,
     required bool isDark,
   }) {
-    final projectStrings = _projects.map((p) => '#${p['id']} — ${p['name']}').toList();
+    String formatLabel(Map<String, String> p) {
+      final id = (p['id'] ?? '').trim();
+      final name = (p['name'] ?? '').trim();
+      if (id.isEmpty) return name;
+      if (name.isEmpty || id == name) return id;
+      return '#$id — $name';
+    }
+
+    final projectStrings = _projects.map(formatLabel).toList();
     final initialVal = _selectedProjectId.isNotEmpty && _projects.any((p) => p['id'] == _selectedProjectId)
-        ? '#$_selectedProjectId — $_selectedProjectName'
-        : '';
+        ? formatLabel(_projects.firstWhere((p) => p['id'] == _selectedProjectId))
+        : (_projects.isNotEmpty ? formatLabel(_projects.first) : '');
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1070,12 +1089,12 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
           },
           onSelected: (String selection) {
             final match = _projects.firstWhere(
-              (p) => '#${p['id']} — ${p['name']}' == selection,
-              orElse: () => {'id': '', 'name': ''},
+              (p) => formatLabel(p) == selection,
+              orElse: () => {'id': selection, 'name': selection},
             );
             setState(() {
-              _selectedProjectId = match['id'] ?? '';
-              _selectedProjectName = match['name'] ?? '';
+              _selectedProjectId = match['id']?.isNotEmpty == true ? match['id']! : selection;
+              _selectedProjectName = match['name']?.isNotEmpty == true ? match['name']! : selection;
             });
           },
           fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
@@ -1096,11 +1115,12 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
                     child: TextField(
                       controller: controller,
                       focusNode: focusNode,
+                      scrollPadding: const EdgeInsets.only(bottom: 120),
                       style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textPrimary),
                       decoration: InputDecoration(
                         border: InputBorder.none,
                         isDense: true,
-                        hintText: 'Type to search (e.g. 456 or FLS)...',
+                        hintText: '',
                         hintStyle: TextStyle(fontSize: 12, color: textSecondary, fontWeight: FontWeight.w500),
                       ),
                     ),
