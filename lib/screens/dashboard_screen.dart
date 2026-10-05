@@ -167,9 +167,14 @@ class HomeScreenTabState extends State<HomeScreenTab> {
     try {
       final data = await apiGet('/api/attendance/me', token: widget.token);
       if (data.isNotEmpty) {
-        // Look for an open active shift (sign_out / clock_out is null)
+        final now = DateTime.now();
+        // Look for an open active shift strictly for TODAY (sign_out / clock_out is null and clock_in is today)
         final active = data.firstWhere(
-          (r) => r['clock_out'] == null && r['clock_in'] != null,
+          (r) {
+            if (r['clock_out'] != null || r['clock_in'] == null) return false;
+            final ci = parseAppDateTime(r['clock_in']);
+            return ci != null && ci.year == now.year && ci.month == now.month && ci.day == now.day;
+          },
           orElse: () => null,
         );
         if (active != null) {
@@ -178,13 +183,12 @@ class HomeScreenTabState extends State<HomeScreenTab> {
             setState(() {
               _clockedIn   = true;
               _clockInTime = ci ?? DateTime.now();
-              _sessionId   = active['_id']?.toString();
+              _sessionId   = active['id']?.toString() ?? active['_id']?.toString();
             });
             _startLocationLoop();
           }
         } else {
-          // If no active shift is open, check today's latest record to display check-in time
-          final now = DateTime.now();
+          // If no active shift is open today, check today's latest record to display check-in time
           final todayRecord = data.firstWhere(
             (r) {
               if (r['clock_in'] == null) return false;
@@ -541,9 +545,12 @@ class HomeScreenTabState extends State<HomeScreenTab> {
 
     int activeSecs = 0;
     if (_clockedIn && _clockInTime != null) {
+      final now = DateTime.now();
       final localCi = _clockInTime!.isUtc ? _clockInTime!.toLocal() : _clockInTime!;
-      activeSecs = DateTime.now().difference(localCi).inSeconds;
-      if (activeSecs < 0) activeSecs = 0;
+      if (localCi.year == now.year && localCi.month == now.month && localCi.day == now.day) {
+        activeSecs = now.difference(localCi).inSeconds;
+        if (activeSecs < 0) activeSecs = 0;
+      }
     }
 
     final totalSecs = completedSecs + activeSecs;

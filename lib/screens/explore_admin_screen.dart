@@ -837,6 +837,74 @@ class ExploreTabState extends State<ExploreTab> {
 
                   const SizedBox(height: 14),
 
+                  // ── Reporting Manager / Direct Approver Box ──
+                  Text(
+                    'REPORTING MANAGER / APPROVER',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: textSecondary, letterSpacing: 0.8),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF1E2638) : const Color(0xFFF0F6FF),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isDark ? const Color(0xFF3B82F6).withAlpha(75) : const Color(0xFFBFDBFE),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 38,
+                          height: 38,
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF2563EB).withAlpha(50) : const Color(0xFFDBEAFE),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.person_pin_rounded, color: Color(0xFF2563EB), size: 22),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                (widget.user['reporting_manager']?.toString().trim().isNotEmpty == true)
+                                    ? widget.user['reporting_manager'].toString().trim()
+                                    : 'Vishwas Damodar Kulal',
+                                style: TextStyle(color: textPrimary, fontWeight: FontWeight.w700, fontSize: 13),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Direct 1-on-1 Approver for this request',
+                                style: TextStyle(color: textSecondary, fontSize: 11, fontWeight: FontWeight.w500),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981).withAlpha(30),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: const Color(0xFF10B981).withAlpha(75)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.verified_rounded, size: 12, color: Color(0xFF10B981)),
+                              SizedBox(width: 4),
+                              Text('1-on-1', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Color(0xFF10B981))),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 14),
+
                   // ── 5. Reason & Notes ───────────────────────────────────────────
                   Text('REASON / PURPOSE',
                       style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: textSecondary, letterSpacing: 0.8)),
@@ -918,10 +986,11 @@ class ExploreTabState extends State<ExploreTab> {
                                     };
 
                                     final res = isEditing
-                                        ? await apiPut('/api/leaves/${editingLeave['id']}', payload, token: widget.token)
-                                        : await apiPost('/api/leaves', payload, token: widget.token);
+                                        ? await apiPut('/api/leaves/${editingLeave['id']}', payload, token: widget.token).timeout(const Duration(seconds: 10))
+                                        : await apiPost('/api/leaves', payload, token: widget.token).timeout(const Duration(seconds: 10));
 
                                     if (res['error'] != null) {
+                                      setModalState(() => submitting = false);
                                       messenger.showSnackBar(
                                         SnackBar(content: Text('Error: ${res['error']}')),
                                       );
@@ -936,11 +1005,13 @@ class ExploreTabState extends State<ExploreTab> {
                                         ),
                                       );
                                     }
-                                  } catch (_) {
+                                  } catch (e) {
+                                    setModalState(() => submitting = false);
                                     messenger.showSnackBar(
-                                      const SnackBar(content: Text('Server connection error.')),
+                                      SnackBar(content: Text('Submission failed: $e')),
                                     );
                                   }
+
                                 },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: amberPrimary,
@@ -2231,11 +2302,13 @@ class ExploreTabState extends State<ExploreTab> {
                             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.3),
                           ),
                           Text(
-                            _isAdmin || _isManager
+                            _isAdmin
                                 ? 'Full Organization & Leadership Oversight'
-                                : _isSeniorTeamLeader
-                                    ? 'Department: $deptName • Senior Department Leadership'
-                                    : 'Department: $deptName • Level 2 Approval',
+                                : _isManager
+                                    ? 'Direct Team & Subordinates Oversight'
+                                    : _isSeniorTeamLeader
+                                        ? 'Department: $deptName • Senior Department Leadership'
+                                        : 'Department: $deptName • Level 2 Approval',
                             style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500),
                           ),
                         ],
