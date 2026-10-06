@@ -26,6 +26,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>This app requires location access in the background to track employee attendance and movement during work hours.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>This app requires location access to verify attendance check-in locations.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app requires access to your location for attendance check-in and check-out verification.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -66,11 +72,5 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>This app requires access to your location for attendance check-in and check-out verification.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>This app requires location access in the background to track employee attendance and movement during work hours.</string>
-	<key>NSLocationAlwaysUsageDescription</key>
-	<string>This app requires location access to verify attendance check-in locations.</string>
 </dict>
 </plist>

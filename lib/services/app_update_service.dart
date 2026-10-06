@@ -95,8 +95,8 @@ class AppUpdateService {
   static const String playStoreMarketUrl = 'market://details?id=$playStorePackage';
   static const String playStoreWebUrl = 'https://play.google.com/store/apps/details?id=$playStorePackage';
 
-  static const String appStoreWebUrl = 'https://apps.apple.com/app/monarch-hr/id6470000000';
-  static const String appStoreSchemeUrl = 'itms-apps://apps.apple.com/app/monarch-hr/id6470000000';
+  static const String appStoreWebUrl = 'https://apps.apple.com/app/monarch-hr/id6815123696';
+  static const String appStoreSchemeUrl = 'itms-apps://apps.apple.com/app/monarch-hr/id6815123696';
 
   /// Directly opens the target platform store (Google Play Store for Android, Apple App Store for iOS)
   static Future<void> openStore({
