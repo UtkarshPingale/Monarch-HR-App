@@ -213,6 +213,7 @@ class AppUpdateService {
           return true;
         } else {
           if (!silent && context.mounted) {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Row(
@@ -240,7 +241,7 @@ class AppUpdateService {
                   },
                 ),
                 backgroundColor: const Color(0xFF1B7047),
-                duration: const Duration(seconds: 4),
+                duration: const Duration(seconds: 5),
                 behavior: SnackBarBehavior.floating,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),
