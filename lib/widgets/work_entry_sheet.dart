@@ -176,7 +176,7 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
           }
           if (uniqueP.isNotEmpty) {
             _projects = uniqueP;
-            if (_selectedProjectId.isNotEmpty && !_projects.any((p) => p['id'] == _selectedProjectId)) {
+            if (_selectedProjectId.isEmpty || !_projects.any((p) => p['id'] == _selectedProjectId)) {
               _selectedProjectId = _projects.first['id']!;
               _selectedProjectName = _projects.first['name']!;
             }
@@ -277,11 +277,18 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
     final mins = _parsedMinutes;
     final remarksText = _remarksCtrl.text.trim();
 
-    // Mandatory project check
+    // Mandatory project check with automatic fallback
+    if (_selectedProjectId.trim().isEmpty && _selectedProjectName.trim().isEmpty) {
+      if (_projects.isNotEmpty) {
+        _selectedProjectId = _projects.first['id'] ?? '';
+        _selectedProjectName = _projects.first['name'] ?? _selectedProjectId;
+      }
+    }
+
     if (_selectedProjectId.trim().isEmpty && _selectedProjectName.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('⚠️ Please select a Project.'),
+          content: Text('⚠️ Please select or type a Project.'),
           backgroundColor: Color(0xFFBA1A1A),
           behavior: SnackBarBehavior.floating,
         ),
@@ -317,8 +324,8 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
     try {
       final payload = {
         'work_date': DateFormat('yyyy-MM-dd').format(_workDate),
-        'project_id': _selectedProjectId,
-        'project_name': _selectedProjectName,
+        'project_id': _selectedProjectId.isNotEmpty ? _selectedProjectId : _selectedProjectName,
+        'project_name': _selectedProjectName.isNotEmpty ? _selectedProjectName : _selectedProjectId,
         'department': _selectedDepartment,
         'task': _selectedTask,
         'subtask': _selectedSubtask,
@@ -344,7 +351,7 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'Work Entry saved for $_selectedProjectName (${hrs}h ${mins}m)',
+                      'Work Entry saved for ${_selectedProjectName.isNotEmpty ? _selectedProjectName : _selectedProjectId} (${hrs}h ${mins}m)',
                       style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                     ),
                   ),
@@ -394,15 +401,13 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
     ];
 
     final keyboardInset = MediaQuery.of(context).viewInsets.bottom;
-    final availableHeight = (MediaQuery.of(context).size.height * 0.92) - keyboardInset;
+    final screenHeight = MediaQuery.of(context).size.height;
 
-    return AnimatedPadding(
+    return Padding(
       padding: EdgeInsets.only(bottom: keyboardInset),
-      duration: const Duration(milliseconds: 100),
-      curve: Curves.easeOut,
       child: Container(
         constraints: BoxConstraints(
-          maxHeight: availableHeight > 250 ? availableHeight : 250,
+          maxHeight: screenHeight * 0.90,
         ),
         decoration: BoxDecoration(
           color: bgSheet,
@@ -412,31 +417,33 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
           ],
         ),
         child: SafeArea(
-        child: Column(
-          children: [
-            // Handle Bar
-            Container(
-              margin: const EdgeInsets.only(top: 10, bottom: 6),
-              width: 44,
-              height: 5,
-              decoration: BoxDecoration(
-                color: textSecondary.withAlpha(70),
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-
-            if (_isLoadingOptions)
-              const LinearProgressIndicator(
-                minHeight: 2,
-                backgroundColor: Colors.transparent,
-                valueColor: AlwaysStoppedAnimation<Color>(amberPrimary),
+          top: false,
+          child: Column(
+            children: [
+              // Handle Bar
+              Container(
+                margin: const EdgeInsets.only(top: 10, bottom: 6),
+                width: 44,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: textSecondary.withAlpha(70),
+                  borderRadius: BorderRadius.circular(10),
+                ),
               ),
 
-            // Scrollable Content
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                children: [
+              if (_isLoadingOptions)
+                const LinearProgressIndicator(
+                  minHeight: 2,
+                  backgroundColor: Colors.transparent,
+                  valueColor: AlwaysStoppedAnimation<Color>(amberPrimary),
+                ),
+
+              // Scrollable Content
+              Expanded(
+                child: ListView(
+                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                  children: [
                   // ── Top Card: WORK DATE & PROJECT ID ─────────────────────────
                   Container(
                     padding: const EdgeInsets.all(16),
@@ -1117,6 +1124,16 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
                       focusNode: focusNode,
                       scrollPadding: const EdgeInsets.only(bottom: 120),
                       style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textPrimary),
+                      onChanged: (val) {
+                        final clean = val.trim();
+                        final cleanId = clean.replaceAll('#', '').split(' — ').first.trim();
+                        final match = _projects.firstWhere(
+                          (p) => formatLabel(p).toLowerCase() == clean.toLowerCase() || (p['id'] ?? '').toLowerCase() == cleanId.toLowerCase(),
+                          orElse: () => {'id': cleanId, 'name': clean},
+                        );
+                        _selectedProjectId = match['id']?.isNotEmpty == true ? match['id']! : cleanId;
+                        _selectedProjectName = match['name']?.isNotEmpty == true ? match['name']! : clean;
+                      },
                       decoration: InputDecoration(
                         border: InputBorder.none,
                         isDense: true,

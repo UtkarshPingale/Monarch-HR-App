@@ -428,7 +428,7 @@ class ExploreTabState extends State<ExploreTab> {
     String toSession = 'Session 2';
     String selectedLeaveType = isEditing && editingLeave['leave_type'] != null
         ? editingLeave['leave_type'].toString()
-        : 'Earned Leave'; // 'Earned Leave', 'Loss Of Pay', 'Comp - Off'
+        : 'Earned Leave'; // 'Earned Leave', 'Regularization', 'Loss Of Pay', 'Comp - Off'
     bool submitting = false;
 
     _leaveTitleCtrl.text = isEditing ? (editingLeave['title'] ?? '') : '';
@@ -468,6 +468,7 @@ class ExploreTabState extends State<ExploreTab> {
             final daysStr = _fmtDays(calculatedDays);
             final isLossOfPay = selectedLeaveType == 'Loss Of Pay';
             final isEarnedLeave = selectedLeaveType == 'Earned Leave';
+            final isRegularization = selectedLeaveType == 'Regularization';
 
             return SingleChildScrollView(
               padding: EdgeInsets.only(
@@ -498,9 +499,9 @@ class ExploreTabState extends State<ExploreTab> {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(isEditing ? 'Edit Leave' : 'Apply Leave',
+                          Text(isEditing ? 'Edit Request' : 'Apply Leave / Regularization',
                               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: textPrimary)),
-                          Text(isEditing ? 'Update your leave request details' : 'Submit your leave request with session details',
+                          Text(isEditing ? 'Update your leave or regularization details' : 'Submit leave application or attendance regularization',
                               style: TextStyle(fontSize: 12, color: textSecondary)),
                         ],
                       ),
@@ -511,12 +512,43 @@ class ExploreTabState extends State<ExploreTab> {
                     ],
                   ),
 
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 12),
+
+                  // Regularization Explanatory Banner
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF132338) : const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: isDark ? const Color(0xFF1E3A8A) : const Color(0xFFBFDBFE)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFF2563EB)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: RichText(
+                            text: TextSpan(
+                              style: TextStyle(fontSize: 11, color: isDark ? const Color(0xFF93C5FD) : const Color(0xFF1E40AF), height: 1.3),
+                              children: const [
+                                TextSpan(text: 'What is Regularization? ', style: TextStyle(fontWeight: FontWeight.w800)),
+                                TextSpan(text: 'Company provides concession to go home up to 2 hours early or regularize forgotten punch-outs with manager approval without leave deduction.'),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 14),
 
                   // ── 1. Leave Type Dropdown (Matches Screenshot) ─────────────────
                   RichText(
                     text: TextSpan(
-                      text: 'Leave type ',
+                      text: 'Request / Leave type ',
                       style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: textSecondary),
                       children: const [
                         TextSpan(text: '*', style: TextStyle(color: Color(0xFFEF4444), fontWeight: FontWeight.bold)),
@@ -539,7 +571,7 @@ class ExploreTabState extends State<ExploreTab> {
                         icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF64748B)),
                         dropdownColor: isDark ? const Color(0xFF1A1E2B) : Colors.white,
                         style: TextStyle(color: textPrimary, fontSize: 14, fontWeight: FontWeight.w600),
-                        items: ['Earned Leave', 'Loss Of Pay', 'Comp - Off'].map((type) {
+                        items: ['Earned Leave', 'Regularization', 'Loss Of Pay', 'Comp - Off'].map((type) {
                           return DropdownMenuItem<String>(
                             value: type,
                             child: Text(type),
@@ -768,20 +800,28 @@ class ExploreTabState extends State<ExploreTab> {
                     decoration: BoxDecoration(
                       color: isLossOfPay
                           ? (isDark ? const Color(0xFF281E1E) : const Color(0xFFFEF2F2))
-                          : (isDark ? const Color(0xFF1E2430) : const Color(0xFFF0FDF4)),
+                          : (isRegularization
+                              ? (isDark ? const Color(0xFF132338) : const Color(0xFFEFF6FF))
+                              : (isDark ? const Color(0xFF1E2430) : const Color(0xFFF0FDF4))),
                       borderRadius: BorderRadius.circular(14),
                       border: Border.all(
                         color: isLossOfPay
                             ? const Color(0xFFFCA5A5)
-                            : const Color(0xFF86EFAC),
+                            : (isRegularization
+                                ? const Color(0xFF93C5FD)
+                                : const Color(0xFF86EFAC)),
                       ),
                     ),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Icon(
-                          isLossOfPay ? Icons.money_off_rounded : Icons.check_circle_outline_rounded,
-                          color: isLossOfPay ? const Color(0xFFDC2626) : const Color(0xFF16A34A),
+                          isLossOfPay
+                              ? Icons.money_off_rounded
+                              : (isRegularization ? Icons.fact_check_rounded : Icons.check_circle_outline_rounded),
+                          color: isLossOfPay
+                              ? const Color(0xFFDC2626)
+                              : (isRegularization ? const Color(0xFF2563EB) : const Color(0xFF16A34A)),
                           size: 20,
                         ),
                         const SizedBox(width: 10),
@@ -792,14 +832,18 @@ class ExploreTabState extends State<ExploreTab> {
                               Row(
                                 children: [
                                   Text(
-                                    '$daysStr ${calculatedDays == 1.0 || calculatedDays == 0.5 ? 'Day' : 'Days'} ($selectedLeaveType)',
+                                    isRegularization
+                                        ? '$daysStr Day Credit ($selectedLeaveType)'
+                                        : '$daysStr ${calculatedDays == 1.0 || calculatedDays == 0.5 ? 'Day' : 'Days'} ($selectedLeaveType)',
                                     style: TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.w800,
-                                      color: isLossOfPay ? const Color(0xFFDC2626) : const Color(0xFF16A34A),
+                                      color: isLossOfPay
+                                          ? const Color(0xFFDC2626)
+                                          : (isRegularization ? const Color(0xFF2563EB) : const Color(0xFF16A34A)),
                                     ),
                                   ),
-                                  if (calculatedDays == 0.5) ...[
+                                  if (calculatedDays == 0.5 && !isRegularization) ...[
                                     const SizedBox(width: 6),
                                     Container(
                                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -817,11 +861,13 @@ class ExploreTabState extends State<ExploreTab> {
                               ),
                               const SizedBox(height: 3),
                               Text(
-                                isEarnedLeave
-                                    ? 'Will deduct $daysStr day(s) from Earned Leave balance (${_fmtDays(_remainingDays)} Days currently available).'
-                                    : (isLossOfPay
-                                        ? 'Loss of Pay (Will not deduct from leave balance • Unpaid leave).'
-                                        : 'Compensatory Off request.'),
+                                isRegularization
+                                    ? 'Regularization Concession: Up to 2 hrs early leave or missed punch correction (0 days leave deducted).'
+                                    : (isEarnedLeave
+                                        ? 'Will deduct $daysStr day(s) from Earned Leave balance (${_fmtDays(_remainingDays)} Days currently available).'
+                                        : (isLossOfPay
+                                            ? 'Loss of Pay (Will not deduct from leave balance • Unpaid leave).'
+                                            : 'Compensatory Off request.')),
                                 style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w500,

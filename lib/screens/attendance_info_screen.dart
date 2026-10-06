@@ -13,12 +13,14 @@ class AttendanceInfoTab extends StatefulWidget {
   final String token;
   final Map<String, dynamic> user;
   final VoidCallback? onNavigateToProfile;
+  final void Function(int count)? onPunchRequestsUpdated;
 
   const AttendanceInfoTab({
     super.key,
     required this.token,
     required this.user,
     this.onNavigateToProfile,
+    this.onPunchRequestsUpdated,
   });
 
   @override
@@ -83,11 +85,6 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
   bool get _isLeaderOrManager {
     final role = (widget.user['role'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
     return role == 'teamleader' || role == 'subteamlead' || role == 'seniorteamlead' || role == 'seniorteamleader' || role == 'manager' || role == 'projectmanager' || role == 'admin' || role == 'hr' || role.contains('leader') || role.contains('lead');
-  }
-
-  bool get _isManager {
-    final role = (widget.user['role'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
-    return role == 'manager' || role == 'projectmanager' || role == 'admin' || role == 'hr';
   }
 
   void setSubTab(String tabName) {
@@ -215,6 +212,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             _teamPunchRequests = res['punch_requests'];
             _loadingPunchRequests = false;
           });
+          widget.onPunchRequestsUpdated?.call(_teamPunchRequests.length);
         }
       } else {
         if (mounted) setState(() => _loadingPunchRequests = false);
@@ -1097,6 +1095,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     children: [
                       _legendPill('Present (P)', isDark ? const Color(0xFF11221E) : const Color(0xFFE8F8F0), isDark ? const Color(0xFF34D399) : const Color(0xFF146C43)),
                       _legendPill('Half (P:A/A:P)', isDark ? const Color(0xFF241C14) : const Color(0xFFFFF3E0), isDark ? const Color(0xFFFBA442) : const Color(0xFF895100)),
+                      _legendPill('Regularize (REG)', isDark ? const Color(0xFF132338) : const Color(0xFFE0F2FE), isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7)),
+                      _legendPill('Missed Punch (M:P)', isDark ? const Color(0xFF281C10) : const Color(0xFFFFF3E0), isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706)),
                       _legendPill('Absent (A)', isDark ? const Color(0xFF2B1618) : const Color(0xFFFFDAD6), isDark ? const Color(0xFFF87171) : const Color(0xFFBA1A1A)),
                       _legendPill('Earned Leave (EL)', isDark ? const Color(0xFF26151B) : const Color(0xFFFDEBF3), isDark ? const Color(0xFFFB7185) : const Color(0xFFB91C68)),
                       _legendPill('Loss of Pay (LP)', isDark ? const Color(0xFF2E1A1A) : const Color(0xFFFFECEB), isDark ? const Color(0xFFFF6B6B) : const Color(0xFFC92A2A)),
@@ -1246,6 +1246,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   int totalMins = 0;
                   bool hasSession1 = false; // 09:30 - 13:30
                   bool hasSession2 = false; // 13:31 - 18:30
+                  bool hasMissingPunchOut = false;
 
                   for (var s in dayShifts) {
                     final ci = s['clock_in'] != null ? parseAppDateTime(s['clock_in']) : null;
@@ -1255,6 +1256,11 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                       totalMins += (s['total_minutes'] as num).toInt();
                     } else if (ci != null && co != null) {
                       totalMins += co.difference(ci).inMinutes;
+                    } else if (isToday && ci != null && co == null) {
+                      final elapsed = now.difference(ci).inMinutes;
+                      if (elapsed > 0) totalMins += elapsed;
+                    } else if (isPast && ci != null && co == null) {
+                      hasMissingPunchOut = true;
                     }
 
                     if (ci != null) {
@@ -1292,6 +1298,11 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                       subTag = 'LEAVE';
                       bg = isDark ? const Color(0xFF201B2E) : const Color(0xFFF3E8FF);
                       tagColor = isDark ? const Color(0xFFA855F7) : const Color(0xFF7E22CE);
+                    } else if (lType.contains('regula') || lType.contains('reg')) {
+                      mainTag = 'REG';
+                      subTag = 'LEAVE';
+                      bg = isDark ? const Color(0xFF132338) : const Color(0xFFE0F2FE);
+                      tagColor = isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7);
                     } else {
                       mainTag = 'EL';
                       subTag = 'LEAVE';
@@ -1308,12 +1319,17 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     subTag = 'WEEK';
                     bg = isDark ? const Color(0xFF161C28) : const Color(0xFFF0F3F8);
                     tagColor = isDark ? const Color(0xFF64748B) : textSecondary;
+                  } else if (hasMissingPunchOut) {
+                    mainTag = 'M:P';
+                    subTag = 'MISSED';
+                    bg = isDark ? const Color(0xFF281C10) : const Color(0xFFFFF3E0);
+                    tagColor = isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706);
                   } else if (totalMins >= 530) {
                     mainTag = 'P';
                     subTag = 'GEN';
                     bg = isDark ? const Color(0xFF11221E) : const Color(0xFFE8F5E9);
                     tagColor = isDark ? const Color(0xFF34D399) : const Color(0xFF146C43);
-                  } else if (totalMins >= 240) {
+                  } else if (totalMins >= 180 || (dayShifts.any((s) => s['clock_out'] != null) && totalMins > 0)) {
                     if (hasSession1 && !hasSession2) {
                       mainTag = 'P:A';
                       subTag = 'HALF';
@@ -1564,13 +1580,15 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
         if (co != null && co.hour >= 17) hasSession2 = true;
       }
 
+      final bool isPastDay = !isToday && dt.isBefore(DateTime(now.year, now.month, now.day));
+      final bool hasMissingPunchOut = isPastDay && dayShifts.any((s) => s['clock_in'] != null && s['clock_out'] == null);
+
       // Standard shift is 9 hours (540 mins). With 10-minute grace buffer (530 mins / 8h 50m), employee gets Full Day!
       const int fullDayThresholdMins = 530; // 540 - 10 min buffer
-      const int halfDayThresholdMins = 240; // 4 hours
 
       final bool isFullDayCompleted = totalMinsAllShifts >= fullDayThresholdMins;
-      // Half day should ONLY be flagged when shift has finished (user clocked out) and worked between 4h and 8h 50m
-      final isHalfDay = !isOffDay && !isShiftActive && lastCo != null && !isFullDayCompleted && totalMinsAllShifts >= halfDayThresholdMins;
+      // Half day is flagged when shift is finished (or partial attendance) and worked < full day
+      final isHalfDay = !isOffDay && !isShiftActive && !hasMissingPunchOut && !isFullDayCompleted && (totalMinsAllShifts >= 180 || (lastCo != null && totalMinsAllShifts > 0));
 
       final hrsStr = '${(totalMinsAllShifts ~/ 60).toString().padLeft(2, '0')}:${(totalMinsAllShifts % 60).toString().padLeft(2, '0')}';
       final otMins = totalMinsAllShifts > 540 ? (totalMinsAllShifts - 540) : 0;
@@ -1652,6 +1670,25 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                           ],
                         ),
                       )
+                    else if (hasMissingPunchOut)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF261D12) : const Color(0xFFFFF3E0),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: isDark ? const Color(0xFFF5A952) : const Color(0xFFFBA442)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              'Missed Punch Out',
+                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: isDark ? const Color(0xFFF5A952) : const Color(0xFF895100)),
+                            ),
+                            Text('• Action Required', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: isDark ? const Color(0xFFFBBF24) : const Color(0xFFB45309))),
+                          ],
+                        ),
+                      )
                     else if (isHalfDay)
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -1696,6 +1733,129 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   ],
                 ),
 
+                if (hasMissingPunchOut) ...[
+                  const SizedBox(height: 16),
+                  if (leave != null)
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF1E2638) : const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: isDark ? const Color(0xFF3B82F6).withAlpha(100) : const Color(0xFFBFDBFE)),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.assignment_turned_in_rounded, color: isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB), size: 22),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('Request Linked: ${leave['title'] ?? leave['leave_type']}',
+                                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: isDark ? const Color(0xFF93C5FD) : const Color(0xFF1E40AF))),
+                                Text('${leave['leave_type'] ?? 'Regularization'} • Status: ${leave['status'] ?? 'Pending'}',
+                                    style: TextStyle(fontSize: 11, color: isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB), fontWeight: FontWeight.w500)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF241C12) : const Color(0xFFFFFBEB),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: isDark ? const Color(0xFF3B2A18) : const Color(0xFFFDE68A)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(Icons.report_problem_rounded, color: isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706), size: 20),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Missing check-out punch recorded ($ciStr $ciAmpm).',
+                                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: isDark ? const Color(0xFFFBBF24) : const Color(0xFF92400E)),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      'If you completed full day, apply for Regularization. If you left early, apply for Half Day leave.',
+                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: textSecondary),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    _showApplyLeaveModal(
+                                      context,
+                                      initialDate: dt,
+                                      initialToDate: dt,
+                                      initialType: 'Regularization',
+                                      initialTitle: 'Attendance Regularization (Forgot Punch Out)',
+                                      initialNote: 'Completed full day shift but forgot to punch out on $headerDateStr.',
+                                      isDark: isDark,
+                                    );
+                                  },
+                                  icon: const Icon(Icons.edit_calendar_rounded, size: 14),
+                                  label: const Text('Regularization (Full Day)', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11)),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF2563EB),
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+                                    elevation: 0,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    _showApplyLeaveModal(
+                                      context,
+                                      initialDate: dt,
+                                      initialToDate: dt,
+                                      initialFromSession: hasSession1 ? 'Session 2' : 'Session 1',
+                                      initialToSession: hasSession1 ? 'Session 2' : 'Session 1',
+                                      initialType: 'Earned Leave',
+                                      initialTitle: 'Half Day Leave (Forgot Punch Out)',
+                                      initialNote: 'Took half day and missed punch out on $headerDateStr.',
+                                      isDark: isDark,
+                                    );
+                                  },
+                                  icon: const Icon(Icons.beach_access_rounded, size: 14),
+                                  label: const Text('Apply Half Day Leave', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11)),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: amberPrimary,
+                                    foregroundColor: amberDark,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+                                    elevation: 0,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+
                 if (isHalfDay) ...[
                   const SizedBox(height: 16),
                   if (leave != null)
@@ -1736,45 +1896,85 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Icon(Icons.warning_amber_rounded, color: isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706), size: 20),
                               const SizedBox(width: 8),
                               Expanded(
-                                child: Text(
-                                  hasSession1 && !hasSession2
-                                      ? 'Session 2 unrecorded. Apply a half-day leave to avoid Loss of Pay.'
-                                      : (!hasSession1 && hasSession2
-                                          ? 'Session 1 unrecorded. Apply a half-day leave to avoid Loss of Pay.'
-                                          : 'Short attendance recorded. You can apply a half-day leave.'),
-                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: isDark ? const Color(0xFFFBBF24) : const Color(0xFF92400E)),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      hasSession1 && !hasSession2
+                                          ? 'Session 2 unrecorded ($hrsStr hrs worked). Apply a half-day leave or regularization.'
+                                          : (!hasSession1 && hasSession2
+                                              ? 'Session 1 unrecorded ($hrsStr hrs worked). Apply a half-day leave or regularization.'
+                                              : 'Short attendance recorded ($hrsStr hrs). Apply a half-day leave or regularization.'),
+                                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: isDark ? const Color(0xFFFBBF24) : const Color(0xFF92400E)),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      '💡 Regularization gives up to 2 hrs early leave concession with manager approval.',
+                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: textSecondary),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 10),
-                          SizedBox(
-                            width: double.infinity,
-                            child: ElevatedButton.icon(
-                              onPressed: () {
-                                _showApplyLeaveModal(
-                                  context,
-                                  initialDate: dt,
-                                  initialToDate: dt,
-                                  initialFromSession: hasSession1 ? 'Session 2' : 'Session 1',
-                                  initialToSession: hasSession1 ? 'Session 2' : 'Session 1',
-                                  isDark: isDark,
-                                );
-                              },
-                              icon: const Icon(Icons.beach_access_rounded, size: 16),
-                              label: const Text('Apply Leave for Half Day', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: amberPrimary,
-                                foregroundColor: amberDark,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                padding: const EdgeInsets.symmetric(vertical: 10),
-                                elevation: 0,
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    _showApplyLeaveModal(
+                                      context,
+                                      initialDate: dt,
+                                      initialToDate: dt,
+                                      initialFromSession: hasSession1 ? 'Session 2' : 'Session 1',
+                                      initialToSession: hasSession1 ? 'Session 2' : 'Session 1',
+                                      initialType: 'Earned Leave',
+                                      initialTitle: 'Half Day Leave',
+                                      initialNote: 'Half day taken on $headerDateStr.',
+                                      isDark: isDark,
+                                    );
+                                  },
+                                  icon: const Icon(Icons.beach_access_rounded, size: 14),
+                                  label: const Text('Apply Half Day Leave', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11)),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: amberPrimary,
+                                    foregroundColor: amberDark,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+                                    elevation: 0,
+                                  ),
+                                ),
                               ),
-                            ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: () {
+                                    _showApplyLeaveModal(
+                                      context,
+                                      initialDate: dt,
+                                      initialToDate: dt,
+                                      initialType: 'Regularization',
+                                      initialTitle: 'Regularization (2 Hrs Early Concession)',
+                                      initialNote: 'Early departure concession requested for $headerDateStr.',
+                                      isDark: isDark,
+                                    );
+                                  },
+                                  icon: const Icon(Icons.edit_calendar_rounded, size: 14, color: Color(0xFF2563EB)),
+                                  label: const Text('Regularization', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11, color: Color(0xFF2563EB))),
+                                  style: OutlinedButton.styleFrom(
+                                    side: const BorderSide(color: Color(0xFF2563EB)),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -1828,7 +2028,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                                 Text(
                                   isShiftActive
                                       ? 'Shift in progress'
-                                      : (isFullDayCompleted ? 'Standard hours met' : (isHalfDay ? 'Half day logged' : 'Shift in progress')),
+                                      : (hasMissingPunchOut ? 'Check-out missing' : (isFullDayCompleted ? 'Standard hours met' : (isHalfDay ? 'Half day logged' : 'Shift in progress'))),
                                   style: TextStyle(
                                     fontSize: 10,
                                     fontWeight: FontWeight.w700,
@@ -1899,7 +2099,16 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                         Text('Last Check Out', style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500)),
                         const SizedBox(height: 2),
                         Text(coStr, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary)),
-                        Text(lastCo != null ? '$coAmpm • Approved' : 'Active', style: TextStyle(fontSize: 10, color: textSecondary, fontWeight: FontWeight.w600)),
+                        Text(
+                          lastCo != null
+                              ? '$coAmpm • Approved'
+                              : (isToday ? 'Active' : 'Missing Check-Out'),
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: lastCo != null ? textSecondary : (isToday ? const Color(0xFF16A34A) : const Color(0xFFE11D48)),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                       ],
                     ),
                   ],
@@ -2449,7 +2658,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     DateTime toDate = initialToDate ?? initialDate;
     String fromSession = initialFromSession;
     String toSession = initialToSession;
-    String selectedLeaveType = initialType; // 'Earned Leave', 'Loss Of Pay', 'Comp - Off'
+    String selectedLeaveType = initialType; // 'Earned Leave', 'Regularization', 'Loss Of Pay', 'Comp - Off'
     bool submitting = false;
     final rawMgr = (_userProfile?['reporting_manager'] ?? widget.user['reporting_manager'] ?? '').toString().trim();
     final reportingManager = rawMgr.isNotEmpty ? rawMgr : '';
@@ -2499,6 +2708,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             final daysStr = fmtDays(calculatedDays);
             final isLossOfPay = selectedLeaveType == 'Loss Of Pay';
             final isEarnedLeave = selectedLeaveType == 'Earned Leave';
+            final isRegularization = selectedLeaveType == 'Regularization';
 
             return SingleChildScrollView(
               padding: EdgeInsets.only(
@@ -2529,9 +2739,9 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(isEditing ? 'Edit Leave' : 'Apply Leave',
+                          Text(isEditing ? 'Edit Request' : 'Apply Leave / Regularization',
                               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: textPrimary)),
-                          Text(isEditing ? 'Update your leave request details' : 'Submit your leave request with session details',
+                          Text(isEditing ? 'Update your leave or regularization details' : 'Submit leave application or attendance regularization',
                               style: TextStyle(fontSize: 12, color: textSecondary)),
                         ],
                       ),
@@ -2542,12 +2752,43 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     ],
                   ),
 
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 12),
+
+                  // Regularization Explanatory Banner
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF132338) : const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: isDark ? const Color(0xFF1E3A8A) : const Color(0xFFBFDBFE)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFF2563EB)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: RichText(
+                            text: TextSpan(
+                              style: TextStyle(fontSize: 11, color: isDark ? const Color(0xFF93C5FD) : const Color(0xFF1E40AF), height: 1.3),
+                              children: const [
+                                TextSpan(text: 'What is Regularization? ', style: TextStyle(fontWeight: FontWeight.w800)),
+                                TextSpan(text: 'Company provides concession to go home up to 2 hours early or regularize forgotten punch-outs with manager approval without leave deduction.'),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 14),
 
                   // 1. Leave Type Dropdown
                   RichText(
                     text: TextSpan(
-                      text: 'Leave type ',
+                      text: 'Request / Leave type ',
                       style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: textSecondary),
                       children: const [
                         TextSpan(text: '*', style: TextStyle(color: Color(0xFFEF4444), fontWeight: FontWeight.bold)),
@@ -2570,7 +2811,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                         icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF64748B)),
                         dropdownColor: isDark ? const Color(0xFF1A1E2B) : Colors.white,
                         style: TextStyle(color: textPrimary, fontSize: 14, fontWeight: FontWeight.w600),
-                        items: ['Earned Leave', 'Loss Of Pay', 'Comp - Off'].map((type) {
+                        items: ['Earned Leave', 'Regularization', 'Loss Of Pay', 'Comp - Off'].map((type) {
                           return DropdownMenuItem<String>(
                             value: type,
                             child: Text(type),
@@ -2793,20 +3034,28 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     decoration: BoxDecoration(
                       color: isLossOfPay
                           ? (isDark ? const Color(0xFF281E1E) : const Color(0xFFFEF2F2))
-                          : (isDark ? const Color(0xFF1E2430) : const Color(0xFFF0FDF4)),
+                          : (isRegularization
+                              ? (isDark ? const Color(0xFF132338) : const Color(0xFFEFF6FF))
+                              : (isDark ? const Color(0xFF1E2430) : const Color(0xFFF0FDF4))),
                       borderRadius: BorderRadius.circular(14),
                       border: Border.all(
                         color: isLossOfPay
                             ? const Color(0xFFFCA5A5)
-                            : const Color(0xFF86EFAC),
+                            : (isRegularization
+                                ? const Color(0xFF93C5FD)
+                                : const Color(0xFF86EFAC)),
                       ),
                     ),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Icon(
-                          isLossOfPay ? Icons.money_off_rounded : Icons.check_circle_outline_rounded,
-                          color: isLossOfPay ? const Color(0xFFDC2626) : const Color(0xFF16A34A),
+                          isLossOfPay
+                              ? Icons.money_off_rounded
+                              : (isRegularization ? Icons.fact_check_rounded : Icons.check_circle_outline_rounded),
+                          color: isLossOfPay
+                              ? const Color(0xFFDC2626)
+                              : (isRegularization ? const Color(0xFF2563EB) : const Color(0xFF16A34A)),
                           size: 20,
                         ),
                         const SizedBox(width: 10),
@@ -2817,14 +3066,18 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                               Row(
                                 children: [
                                   Text(
-                                    '$daysStr ${calculatedDays == 1.0 || calculatedDays == 0.5 ? 'Day' : 'Days'} ($selectedLeaveType)',
+                                    isRegularization
+                                        ? '$daysStr Day Credit ($selectedLeaveType)'
+                                        : '$daysStr ${calculatedDays == 1.0 || calculatedDays == 0.5 ? 'Day' : 'Days'} ($selectedLeaveType)',
                                     style: TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.w800,
-                                      color: isLossOfPay ? const Color(0xFFDC2626) : const Color(0xFF16A34A),
+                                      color: isLossOfPay
+                                          ? const Color(0xFFDC2626)
+                                          : (isRegularization ? const Color(0xFF2563EB) : const Color(0xFF16A34A)),
                                     ),
                                   ),
-                                  if (calculatedDays == 0.5) ...[
+                                  if (calculatedDays == 0.5 && !isRegularization) ...[
                                     const SizedBox(width: 6),
                                     Container(
                                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -2842,11 +3095,13 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                               ),
                               const SizedBox(height: 3),
                               Text(
-                                isEarnedLeave
-                                    ? 'Will deduct $daysStr day(s) from Earned Leave balance (${fmtDays(_remainingDays)} Days currently available).'
-                                    : (isLossOfPay
-                                        ? 'Loss of Pay (Will not deduct from leave balance • Unpaid leave).'
-                                        : 'Compensatory Off request.'),
+                                isRegularization
+                                    ? 'Regularization Concession: Up to 2 hrs early leave or missed punch correction (0 days leave deducted).'
+                                    : (isEarnedLeave
+                                        ? 'Will deduct $daysStr day(s) from Earned Leave balance (${fmtDays(_remainingDays)} Days currently available).'
+                                        : (isLossOfPay
+                                            ? 'Loss of Pay (Will not deduct from leave balance • Unpaid leave).'
+                                            : 'Compensatory Off request.')),
                                 style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w500,
@@ -3150,15 +3405,15 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     if (loc.contains('Out #')) {
       final m = RegExp(r'Out #(\d+)').firstMatch(loc);
       if (m != null) return 'Biometric Machine #${m.group(1)}';
-    } else if (loc.contains('In #')) {
-      final m = RegExp(r'In #(\d+)').firstMatch(loc);
-      if (m != null) return 'Biometric Machine #${m.group(1)}';
     }
-    if (loc.isNotEmpty) {
+    if (s['clock_out_lat'] != null) {
+      return s['nearest_building']?.toString() ?? 'Mobile Phone (GPS)';
+    }
+    if (loc.isNotEmpty && !loc.contains('In #')) {
       if (loc.startsWith('Biometric Machine')) return 'Biometric Machine';
       return loc;
     }
-    return 'Monarch House (HQ)';
+    return s['nearest_building']?.toString() ?? 'Mobile Phone (GPS)';
   }
 
   Widget _legendPill(String label, Color bg, Color textCol) {
@@ -3708,110 +3963,150 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     final dist = isPunchIn ? s['distance_meters'] : s['clock_out_distance_meters'];
 
     final locStr = s['location']?.toString() ?? '';
-    final isBiometric = locStr.contains('Biometric Machine') ||
-        (s['clock_in_location']?.toString().contains('Biometric Machine') ?? false) ||
-        (s['clock_out_location']?.toString().contains('Biometric Machine') ?? false);
+    final punchInLoc = (s['clock_in_location'] ?? s['punch_in_location'])?.toString() ?? '';
+    final punchOutLoc = (s['clock_out_location'] ?? s['punch_out_location'])?.toString() ?? '';
 
-    if (status == 'Approved') {
-      if (isBiometric) {
-        String devLabel = 'Biometric Machine';
-        if (isPunchIn) {
-          final mIn = RegExp(r'In #(\d+)').firstMatch(locStr);
-          if (mIn != null) {
-            devLabel = 'Biometric Machine #${mIn.group(1)}';
-          }
-        } else {
-          final mOut = RegExp(r'Out #(\d+)').firstMatch(locStr);
-          if (mOut != null) {
-            devLabel = 'Biometric Machine #${mOut.group(1)}';
-          } else {
-            final mIn = RegExp(r'In #(\d+)').firstMatch(locStr);
-            if (mIn != null) devLabel = 'Biometric Machine #${mIn.group(1)}';
-          }
+    final bool isBiometric = isPunchIn
+        ? (locStr.contains('In #') || punchInLoc.contains('Biometric Machine') || (locStr.startsWith('Biometric Machine') && s['clock_in_lat'] == null))
+        : (locStr.contains('Out #') || punchOutLoc.contains('Biometric Machine'));
+
+    // 1. Biometric punch is always automatically verified (no approval required)
+    if (isBiometric) {
+      String devLabel = 'Biometric Machine';
+      if (isPunchIn) {
+        final mIn = RegExp(r'In #(\d+)').firstMatch(locStr);
+        if (mIn != null) {
+          devLabel = 'Biometric Machine #${mIn.group(1)}';
+        } else if (punchInLoc.isNotEmpty) {
+          devLabel = punchInLoc;
         }
-
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.fingerprint_rounded, size: 13, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
-              const SizedBox(width: 4),
-              Flexible(
-                child: Text(
-                  '🏢 Biometric Verified • $devLabel',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      } else if (inGeofence || (dist != null && dist <= 20)) {
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.verified_rounded, size: 12, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
-              const SizedBox(width: 4),
-              Flexible(
-                child: Text(
-                  '🏢 In-Office Verified • $bldg (≤ 20m)',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
       } else {
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.check_circle_rounded, size: 12, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
-              const SizedBox(width: 4),
-              Flexible(
-                child: Text(
-                  '✅ Approved by ${s['reviewed_by'] ?? 'Supervisor'} (${dist != null ? '${dist}m' : ''} from $bldg)',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
-                  ),
+        final mOut = RegExp(r'Out #(\d+)').firstMatch(locStr);
+        if (mOut != null) {
+          devLabel = 'Biometric Machine #${mOut.group(1)}';
+        } else if (punchOutLoc.isNotEmpty) {
+          devLabel = punchOutLoc;
+        }
+      }
+
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.fingerprint_rounded, size: 13, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                '🏢 Biometric Verified • $devLabel',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
                 ),
               ),
-            ],
-          ),
-        );
-      }
-    } else if (status == 'Pending TL Approval' || status == 'Pending Approval') {
+            ),
+          ],
+        ),
+      );
+    }
+
+    // 2. Mobile punch inside 20m office geofence is verified
+    if (inGeofence || (dist != null && dist <= 20)) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.verified_rounded, size: 12, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                '🏢 In-Office Verified • $bldg (≤ 20m)',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // 3. Out-of-geofence punch: Check approval status
+    if (status == 'Approved') {
+      final rev = s['reviewed_by'] != null && s['reviewed_by'].toString().trim().isNotEmpty
+          ? s['reviewed_by'].toString()
+          : 'Supervisor';
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.check_circle_rounded, size: 12, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                '✅ Approved by $rev (${dist != null ? '${dist}m' : ''} from $bldg)',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    } else if (status == 'Rejected') {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF2B1618) : const Color(0xFFFFE4E6),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cancel_rounded, size: 12, color: isDark ? const Color(0xFFFB7185) : const Color(0xFFE11D48)),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                '❌ Rejected ${s['rejection_reason'] != null ? '• ${s['rejection_reason']}' : ''}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? const Color(0xFFFB7185) : const Color(0xFFE11D48),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    } else {
+      // Pending TL or Manager approval
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
@@ -3838,62 +4133,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
           ],
         ),
       );
-    } else if (status == 'Pending Manager Approval') {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.how_to_reg_rounded, size: 12, color: isDark ? const Color(0xFF34D399) : const Color(0xFF16A34A)),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                '⚠️ Out of Range • TL Approved • Waiting for Manager Approval',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: isDark ? const Color(0xFF34D399) : const Color(0xFF15803D),
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-    } else if (status == 'Rejected') {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(
-          color: isDark ? const Color(0xFF2B1618) : const Color(0xFFFFE4E6),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.cancel_rounded, size: 12, color: isDark ? const Color(0xFFF87171) : const Color(0xFFE11D48)),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                '❌ Rejected by ${s['reviewed_by'] ?? 'Supervisor'}${s['rejection_reason'] != null && s['rejection_reason'].toString().isNotEmpty ? ' (${s['rejection_reason']})' : ''}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: isDark ? const Color(0xFFF87171) : const Color(0xFFBE123C),
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
     }
-    return const SizedBox.shrink();
   }
 
   Widget _buildPunchApprovalsView(
@@ -4022,22 +4262,22 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
         else
           ...List.generate(_teamPunchRequests.length, (idx) {
             final p = _teamPunchRequests[idx];
-            final name = p['name'] ?? 'Employee';
+            final name = p['name'] ?? p['employee_name'] ?? 'Employee';
             final role = p['role'] ?? 'Employee';
             final dept = p['department'] ?? 'General';
             final dateStr = p['date'] ?? '';
             final signIn = p['sign_in'];
             final signOut = p['sign_out'];
-            final isCheckOut = signOut != null;
-            final punchTime = isCheckOut ? signOut : (signIn ?? '--:--');
+            final isCheckOut = (signOut != null && signOut.toString().isNotEmpty) || (p['clock_out'] != null && p['clock_out'].toString().isNotEmpty);
+            final punchTime = isCheckOut ? (signOut ?? p['clock_out'] ?? '--:--') : (signIn ?? p['clock_in'] ?? '--:--');
             final bldg = p['nearest_building'] ?? 'Office';
-            final dist = p['distance_meters'];
-            final loc = p['location'] ?? 'GPS Coordinates';
-            final reqId = p['id'];
+            final dist = isCheckOut ? (p['clock_out_distance_meters'] ?? p['distance_meters']) : p['distance_meters'];
+            final loc = isCheckOut
+                ? (p['clock_out_location'] ?? p['punch_out_location'] ?? p['location'] ?? 'GPS Coordinates')
+                : (p['clock_in_location'] ?? p['punch_in_location'] ?? p['location'] ?? 'GPS Coordinates');
+            final reqId = p['id'] ?? p['_id'];
             final approvalStatus = (p['approval_status'] ?? 'Pending Approval').toString();
-            final isPendingTL = approvalStatus == 'Pending TL Approval' || approvalStatus == 'Pending Approval';
             final isPendingManager = approvalStatus == 'Pending Manager Approval';
-            final isManager = _isManager;
             final reviewedBy = p['reviewed_by'] ?? '';
 
             return Container(
@@ -4194,75 +4434,47 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
                   const SizedBox(height: 14),
 
-                  // Actions Row: Manager vs Team Leader
-                  if (isManager && isPendingTL) ...[
-                    // Manager sees that it is waiting for Team Leader
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                      decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF1B2130) : const Color(0xFFF1F5F9),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: isDark ? const Color(0xFF2E384D) : const Color(0xFFCBD5E1)),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.hourglass_top_rounded, size: 15, color: isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706)),
-                          const SizedBox(width: 8),
-                          Text(
-                            'Waiting for Team Leader to approve',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: isDark ? const Color(0xFFF5A952) : const Color(0xFFB45309),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ] else ...[
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _actionInProgress ? null : () => _showRejectPunchDialog(p),
-                            icon: const Icon(Icons.close_rounded, size: 16, color: Color(0xFFDC2626)),
-                            label: const Text('Reject', style: TextStyle(color: Color(0xFFDC2626), fontWeight: FontWeight.w700, fontSize: 12)),
-                            style: OutlinedButton.styleFrom(
-                              side: const BorderSide(color: Color(0xFFFCA5A5)),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                            ),
+                  // Actions Row: Reject and Approve Buttons
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _actionInProgress ? null : () => _showRejectPunchDialog(p),
+                          icon: const Icon(Icons.close_rounded, size: 16, color: Color(0xFFDC2626)),
+                          label: const Text('Reject', style: TextStyle(color: Color(0xFFDC2626), fontWeight: FontWeight.w700, fontSize: 12)),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Color(0xFFFCA5A5)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            padding: const EdgeInsets.symmetric(vertical: 10),
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            onPressed: _actionInProgress
-                                ? null
-                                : () {
-                                    if (reqId != null) {
-                                      final idInt = reqId is int ? reqId : int.tryParse(reqId.toString()) ?? 0;
-                                      _actionPunchRequest(idInt, 'approve');
-                                    }
-                                  },
-                            icon: const Icon(Icons.check_rounded, size: 16, color: Colors.white),
-                            label: Text(
-                              isManager ? 'Final Approve' : 'Approve Punch',
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF16A34A),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              elevation: 0,
-                            ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _actionInProgress
+                              ? null
+                              : () {
+                                  if (reqId != null) {
+                                    final idInt = reqId is int ? reqId : int.tryParse(reqId.toString()) ?? 0;
+                                    _actionPunchRequest(idInt, 'approve');
+                                  }
+                                },
+                          icon: const Icon(Icons.check_rounded, size: 16, color: Colors.white),
+                          label: const Text(
+                            'Approve',
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF16A34A),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            elevation: 0,
                           ),
                         ),
-                      ],
-                    ),
-                  ],
+                      ),
+                    ],
+                  ),
                 ],
               ),
             );

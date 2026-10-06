@@ -70,7 +70,8 @@ class AppUpdateService {
   static Future<bool> isUpdateAvailable() async {
     try {
       await init();
-      final res = await apiGetJson('/api/app/version');
+      final String platform = (!kIsWeb && Platform.isIOS) ? 'ios' : 'android';
+      final res = await apiGetJson('/api/app/version?platform=$platform');
       if (res is Map<String, dynamic>) {
         final newVersionName = res['version_name']?.toString() ?? '1.0.0';
         final newVersionCode = int.tryParse(res['version_code']?.toString() ?? '0') ?? 0;
@@ -180,7 +181,8 @@ class AppUpdateService {
   }) async {
     try {
       await init();
-      final res = await apiGetJson('/api/app/version');
+      final String platform = (!kIsWeb && Platform.isIOS) ? 'ios' : 'android';
+      final res = await apiGetJson('/api/app/version?platform=$platform');
       if (res is Map<String, dynamic>) {
         final newVersionName = res['version_name']?.toString() ?? '1.0.0';
         final newVersionCode = int.tryParse(res['version_code']?.toString() ?? '0') ?? 0;
@@ -219,14 +221,26 @@ class AppUpdateService {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'App is up to date! Monarch HR v$currentVersionName (Build $currentVersionCode) is the latest release.',
+                        'Monarch HR v$currentVersionName (Build $currentVersionCode) is up to date!',
                         style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                       ),
                     ),
                   ],
                 ),
+                action: SnackBarAction(
+                  label: 'Store Page',
+                  textColor: const Color(0xFFFDE68A),
+                  onPressed: () {
+                    openStore(
+                      context: context,
+                      customUrl: downloadUrl,
+                      playStoreUrl: playStoreUrl,
+                      appStoreUrl: appStoreUrl,
+                    );
+                  },
+                ),
                 backgroundColor: const Color(0xFF1B7047),
-                duration: const Duration(seconds: 3),
+                duration: const Duration(seconds: 4),
                 behavior: SnackBarBehavior.floating,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),

@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import '../config/api_config.dart';
 import '../controllers/theme_controller.dart';
 import 'dashboard_screen.dart';
 import 'attendance_info_screen.dart';
@@ -28,20 +30,54 @@ class MainNavigationContainer extends StatefulWidget {
 
 class _MainNavigationContainerState extends State<MainNavigationContainer> {
   int _currentIndex = 0;
+  int _pendingPunchCount = 0;
+  Timer? _punchCheckTimer;
   final GlobalKey<HomeScreenTabState> _homeKey = GlobalKey<HomeScreenTabState>();
   final GlobalKey<AttendanceInfoTabState> _attendanceKey = GlobalKey<AttendanceInfoTabState>();
   final GlobalKey<ExploreTabState> _exploreKey = GlobalKey<ExploreTabState>();
+
+  bool get _isLeaderOrManager {
+    final role = (widget.user['role'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
+    return role == 'teamleader' ||
+        role == 'subteamlead' ||
+        role == 'seniorteamlead' ||
+        role == 'seniorteamleader' ||
+        role == 'manager' ||
+        role == 'projectmanager' ||
+        role == 'admin' ||
+        role == 'hr' ||
+        role.contains('leader') ||
+        role.contains('lead');
+  }
 
   @override
   void initState() {
     super.initState();
     themeController.addListener(_onThemeChange);
+    _fetchPendingPunchCount();
+    _punchCheckTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      _fetchPendingPunchCount();
+    });
   }
 
   @override
   void dispose() {
     themeController.removeListener(_onThemeChange);
+    _punchCheckTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _fetchPendingPunchCount() async {
+    if (!_isLeaderOrManager) return;
+    try {
+      final res = await apiGetJson('/api/team/punch-requests', token: widget.token).timeout(const Duration(seconds: 5));
+      if (res is Map && res['punch_requests'] is List) {
+        final count = (res['punch_requests'] as List).length;
+        if (mounted && _pendingPunchCount != count) {
+          setState(() => _pendingPunchCount = count);
+        }
+      }
+    } catch (_) {}
   }
 
   void _onThemeChange() {
@@ -60,6 +96,7 @@ class _MainNavigationContainerState extends State<MainNavigationContainer> {
     } else if (index == 2) {
       _exploreKey.currentState?.refreshData();
     }
+    _fetchPendingPunchCount();
   }
 
   @override
@@ -96,6 +133,11 @@ class _MainNavigationContainerState extends State<MainNavigationContainer> {
         token: widget.token,
         user: widget.user,
         onNavigateToProfile: () => _switchTab(3),
+        onPunchRequestsUpdated: (count) {
+          if (mounted && _pendingPunchCount != count) {
+            setState(() => _pendingPunchCount = count);
+          }
+        },
       ),
       ExploreTab(
         key: _exploreKey,
@@ -162,10 +204,26 @@ class _MainNavigationContainerState extends State<MainNavigationContainer> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _navItem(0, Icons.home_rounded, 'Home', amberPrimary, isDark),
-                  _navItem(1, Icons.calendar_month_rounded, 'History', amberPrimary, isDark),
-                  _navItem(2, Icons.beach_access_rounded, 'Leave', amberPrimary, isDark),
-                  _navItem(3, Icons.person_rounded, 'Profile', amberPrimary, isDark, hasAlert: isProfileIncomplete),
+                  _navItem(0, Icons.home_rounded, 'Home', amberPrimary, isDark, navBg: navBg),
+                  _navItem(
+                    1,
+                    Icons.calendar_month_rounded,
+                    'History',
+                    amberPrimary,
+                    isDark,
+                    badgeCount: _pendingPunchCount,
+                    navBg: navBg,
+                  ),
+                  _navItem(2, Icons.beach_access_rounded, 'Leave', amberPrimary, isDark, navBg: navBg),
+                  _navItem(
+                    3,
+                    Icons.person_rounded,
+                    'Profile',
+                    amberPrimary,
+                    isDark,
+                    hasAlert: isProfileIncomplete,
+                    navBg: navBg,
+                  ),
                 ],
               ),
             ),
@@ -175,7 +233,16 @@ class _MainNavigationContainerState extends State<MainNavigationContainer> {
     );
   }
 
-  Widget _navItem(int index, IconData icon, String label, Color accent, bool isDark, {bool hasAlert = false}) {
+  Widget _navItem(
+    int index,
+    IconData icon,
+    String label,
+    Color accent,
+    bool isDark, {
+    bool hasAlert = false,
+    int badgeCount = 0,
+    required Color navBg,
+  }) {
     final isSelected = _currentIndex == index;
     final selectedBg = isSelected ? accent : Colors.transparent;
     final selectedFg = isSelected ? const Color(0xFF6B3F00) : (isDark ? const Color(0xFF9CA3AF) : const Color(0xFF524437));
@@ -185,36 +252,74 @@ class _MainNavigationContainerState extends State<MainNavigationContainer> {
       behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
           color: selectedBg,
           borderRadius: BorderRadius.circular(20),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Stack(
               clipBehavior: Clip.none,
               children: [
                 Icon(icon, size: 20, color: selectedFg),
-                if (hasAlert && !isSelected)
+                if (!isSelected && (hasAlert || badgeCount > 0))
                   Positioned(
-                    top: -2,
-                    right: -3,
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFFF2A55),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
+                    top: badgeCount > 0 ? -4 : -2,
+                    right: badgeCount > 0 ? -6 : -3,
+                    child: badgeCount > 0
+                        ? Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFF2A55),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: navBg, width: 1.5),
+                            ),
+                            child: Text(
+                              badgeCount > 99 ? '99+' : '$badgeCount',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 8,
+                                fontWeight: FontWeight.w900,
+                                height: 1.0,
+                              ),
+                            ),
+                          )
+                        : Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: Color(0xFFFF2A55),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
                   ),
               ],
             ),
             if (isSelected) ...[
               const SizedBox(width: 6),
               Text(label, style: TextStyle(color: selectedFg, fontSize: 12, fontWeight: FontWeight.w700)),
+              if (badgeCount > 0) ...[
+                const SizedBox(width: 5),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF2A55),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    badgeCount > 99 ? '99+' : '$badgeCount',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.w900,
+                      height: 1.0,
+                    ),
+                  ),
+                ),
+              ],
             ],
           ],
         ),

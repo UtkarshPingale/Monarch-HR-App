@@ -15,7 +15,7 @@ DateTime? parseAppDateTime(dynamic val) {
     return val.isUtc ? val.toLocal() : val;
   }
   final str = val.toString().trim();
-  if (str.isEmpty || str == 'null') return null;
+  if (str.isEmpty || str == 'null' || str == '00:00:00' || str == '00:00' || str == '0:00:00') return null;
 
   try {
     // If plain time e.g. "11:21:00" or "05:51"

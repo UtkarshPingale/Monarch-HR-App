@@ -260,22 +260,12 @@ class HomeScreenTabState extends State<HomeScreenTab> {
       return;
     }
 
-    Position pos;
     try {
-      pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-    } catch (e) {
-      setState(() {
-        _message = '⚠ Unable to fetch location. Try again.';
-        _loading = false;
-      });
-      return;
-    }
-
-    try {
+      final pos = await getPosition();
       final clientNow = DateTime.now();
       final res = await apiPost('/api/attendance/clock-in', {
-        'lat': pos.latitude,
-        'lng': pos.longitude,
+        'lat': pos?.latitude,
+        'lng': pos?.longitude,
         'client_time': clientNow.toIso8601String(),
       }, token: widget.token);
 
@@ -283,7 +273,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         if (res['error'].toString().toLowerCase().contains('token')) {
           widget.onLogout();
         } else {
-          setState(() => _message = res['error']);
+          if (mounted) setState(() => _message = res['error']);
         }
       } else {
         final inGeofence = res['in_geofence'] == true;
@@ -293,27 +283,29 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         if (!inGeofence) {
           msg = '⚠️ Checked in ${dist != null ? '${dist}m' : 'away'} from $bldg (> 20m). Punch sent for Team Approval.';
         }
-        setState(() {
-          _clockedIn    = true;
-          _clockInTime  = clientNow;
-          _sessionId    = res['session_id']?.toString();
-          _message      = msg;
-        });
+        if (mounted) {
+          setState(() {
+            _clockedIn    = true;
+            _clockInTime  = clientNow;
+            _sessionId    = res['session_id']?.toString();
+            _message      = msg;
+          });
+        }
         _startLocationLoop();
         _fetchData();
       }
     } catch (_) {
-      setState(() => _message = '⚠ Server connection error.');
+      if (mounted) setState(() => _message = '⚠ Server connection error.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
-
-    setState(() => _loading = false);
   }
 
   Future<void> _clockOut() async {
     setState(() { _loading = true; _message = null; });
 
-    final pos = await getPosition();
     try {
+      final pos = await getPosition();
       final res = await apiPost('/api/attendance/clock-out', {
         'lat': pos?.latitude,
         'lng': pos?.longitude,
@@ -324,7 +316,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         if (res['error'].toString().toLowerCase().contains('token')) {
           widget.onLogout();
         } else {
-          setState(() => _message = res['error']);
+          if (mounted) setState(() => _message = res['error']);
         }
       } else {
         final sessionId = res['session']?['_id']?.toString();
@@ -335,11 +327,13 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         if (!inGeofence) {
           msg = '⚠️ Checked out ${dist != null ? '${dist}m' : 'away'} from $bldg (> 20m). Punch sent for Team Approval.';
         }
-        setState(() {
-          _clockedIn    = false;
-          _sessionId    = null;
-          _message      = msg;
-        });
+        if (mounted) {
+          setState(() {
+            _clockedIn    = false;
+            _sessionId    = null;
+            _message      = msg;
+          });
+        }
         _locTimer?.cancel();
         if (sessionId != null) {
           saveRouteToDB(sessionId, widget.token);
@@ -347,10 +341,10 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         _fetchData();
       }
     } catch (_) {
-      setState(() => _message = 'Server connection error.');
+      if (mounted) setState(() => _message = 'Server connection error.');
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
-
-    setState(() => _loading = false);
   }
 
   Future<void> _handleCheckInPress(List<dynamic> todayRecords, bool isDark, Color textPrimary, Color textSecondary, Color amberPrimary) async {
@@ -608,10 +602,13 @@ class HomeScreenTabState extends State<HomeScreenTab> {
 
     // Get the latest check-out time of today
     DateTime? lastCheckOutToday;
+    bool isWaitingApproval = false;
     if (!_clockedIn && todayRecords.isNotEmpty) {
       for (var r in todayRecords.reversed) {
         if (r['clock_out'] != null) {
           lastCheckOutToday = parseAppDateTime(r['clock_out']);
+          final st = (r['approval_status'] ?? '').toString();
+          isWaitingApproval = st.startsWith('Pending') || st.contains('Approval');
           break;
         }
       }
@@ -621,17 +618,20 @@ class HomeScreenTabState extends State<HomeScreenTab> {
     final localClockInTime = _clockInTime != null ? (_clockInTime!.isUtc ? _clockInTime!.toLocal() : _clockInTime!) : null;
     final String displayCheckIn = (_clockedIn && localClockInTime != null)
         ? DateFormat('hh:mm a').format(localClockInTime)
-        : '-- : --';
+        : (todayRecords.isNotEmpty && todayRecords.first['clock_in'] != null
+            ? DateFormat('hh:mm a').format((parseAppDateTime(todayRecords.first['clock_in']) ?? DateTime.now()).toLocal())
+            : (localClockInTime != null ? DateFormat('hh:mm a').format(localClockInTime) : '-- : --'));
 
     final String displayCheckOut = _clockedIn
         ? '-- : --'
         : (lastCheckOutToday != null
-            ? DateFormat('hh:mm a').format(lastCheckOutToday)
+            ? DateFormat('hh:mm a').format(lastCheckOutToday.isUtc ? lastCheckOutToday.toLocal() : lastCheckOutToday)
             : '-- : --');
 
-    final DateTime targetShiftIn = (_clockedIn && localClockInTime != null)
-        ? localClockInTime
-        : DateTime(_now.year, _now.month, _now.day, 9, 30);
+    final DateTime targetShiftIn = localClockInTime ??
+        (todayRecords.isNotEmpty && todayRecords.first['clock_in'] != null
+            ? (parseAppDateTime(todayRecords.first['clock_in'])?.toLocal() ?? DateTime(_now.year, _now.month, _now.day, 9, 30))
+            : DateTime(_now.year, _now.month, _now.day, 9, 30));
     final DateTime targetShiftOut = targetShiftIn.add(const Duration(hours: 9));
     final String workShiftStr = '${DateFormat('hh:mm a').format(targetShiftIn)} – ${DateFormat('hh:mm a').format(targetShiftOut)}';
 
@@ -1015,13 +1015,37 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                         : () {
                             if (_clockedIn) {
                               _handleCheckOutPress(isDark, textPrimary, textSecondary, displayCheckIn);
+                            } else if (lastCheckOutToday != null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    isWaitingApproval
+                                        ? '⏳ Shift completed at $displayCheckOut. Punch is awaiting TL review.'
+                                        : '✅ Shift completed for today (Checked out at $displayCheckOut).',
+                                  ),
+                                  duration: const Duration(seconds: 3),
+                                  backgroundColor: const Color(0xFF1E293B),
+                                ),
+                              );
                             } else {
                               _handleCheckInPress(todayRecords, isDark, textPrimary, textSecondary, amberPrimary);
                             }
                           },
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: amberPrimary,
-                      foregroundColor: const Color(0xFF6B3F00),
+                      backgroundColor: _clockedIn
+                          ? amberPrimary
+                          : (lastCheckOutToday != null
+                              ? (isWaitingApproval
+                                  ? (isDark ? const Color(0xFF332014) : const Color(0xFFFEF3C7))
+                                  : (isDark ? const Color(0xFF132A1C) : const Color(0xFFDCFCE7)))
+                              : amberPrimary),
+                      foregroundColor: _clockedIn
+                          ? const Color(0xFF6B3F00)
+                          : (lastCheckOutToday != null
+                              ? (isWaitingApproval
+                                  ? (isDark ? const Color(0xFFFBBF24) : const Color(0xFFB45309))
+                                  : (isDark ? const Color(0xFF4ADE80) : const Color(0xFF166534)))
+                              : const Color(0xFF6B3F00)),
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                       elevation: 0,
@@ -1032,11 +1056,22 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Text(
-                                _clockedIn ? 'Check Out' : 'Check In',
+                                _clockedIn
+                                    ? 'Check Out'
+                                    : (lastCheckOutToday != null
+                                        ? (isWaitingApproval ? 'Awaiting Approval' : 'Shift Completed')
+                                        : 'Check In'),
                                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
                               ),
                               const SizedBox(width: 8),
-                              const Icon(Icons.access_time_rounded, size: 20),
+                              Icon(
+                                _clockedIn
+                                    ? Icons.access_time_rounded
+                                    : (lastCheckOutToday != null
+                                        ? (isWaitingApproval ? Icons.hourglass_top_rounded : Icons.check_circle_rounded)
+                                        : Icons.access_time_rounded),
+                                size: 20,
+                              ),
                             ],
                           ),
                   ),
@@ -1409,6 +1444,70 @@ class HomeScreenTabState extends State<HomeScreenTab> {
               final coStr = co != null ? DateFormat('hh:mm a').format(co) : '--:--';
               final sessTitle = todayRecords.length > 1 ? ' (#${idx + 1})' : '';
 
+              final inGeofence = r['in_geofence'] == true;
+              final inLocStr = r['location']?.toString() ?? '';
+              final punchInLoc = (r['clock_in_location'] ?? r['punch_in_location'])?.toString() ?? '';
+              final bool isBiometricIn = inLocStr.contains('In #') || punchInLoc.contains('Biometric Machine') || (inLocStr.startsWith('Biometric Machine') && r['clock_in_lat'] == null);
+              final inStatus = (r['approval_status'] ?? 'Approved').toString();
+
+              String inBadgeText = isBiometricIn ? 'On-Site' : (inGeofence ? 'On-Site' : 'Out of Range');
+              Color inBadgeBg = isDark ? const Color(0xFF1F2633) : const Color(0xFFEAEFF8);
+              Color inBadgeTextCol = textSecondary;
+              if (!isBiometricIn && !inGeofence) {
+                inBadgeBg = isDark ? const Color(0xFF261D12) : const Color(0xFFFEF3C7);
+                inBadgeTextCol = isDark ? const Color(0xFFF5A952) : const Color(0xFFB45309);
+              }
+
+              String inStatusText = 'On Time';
+              Color inStatusCol = const Color(0xFF146C43);
+              if (!isBiometricIn && !inGeofence) {
+                if (inStatus == 'Pending TL Approval' || inStatus == 'Pending Approval') {
+                  inStatusText = 'Waiting for TL';
+                  inStatusCol = isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706);
+                } else if (inStatus == 'Rejected') {
+                  inStatusText = 'Rejected';
+                  inStatusCol = const Color(0xFFDC2626);
+                } else if (inStatus == 'Approved') {
+                  inStatusText = 'Approved';
+                  inStatusCol = const Color(0xFF146C43);
+                }
+              }
+
+              final outGeofence = r['clock_out_in_geofence'] == true;
+              final outLocStr = r['location']?.toString() ?? '';
+              final punchOutLoc = (r['clock_out_location'] ?? r['punch_out_location'])?.toString() ?? '';
+              final bool isBiometricOut = outLocStr.contains('Out #') || punchOutLoc.contains('Biometric Machine');
+              final outStatus = (r['approval_status'] ?? (outGeofence ? 'Approved' : 'Pending TL Approval')).toString();
+
+              String outBadgeText = isBiometricOut ? 'Completed' : (outGeofence ? 'Completed' : 'Out of Range');
+              Color outBadgeBg = isDark ? const Color(0xFF1F2633) : const Color(0xFFEAEFF8);
+              Color outBadgeTextCol = textSecondary;
+              if (!isBiometricOut && !outGeofence) {
+                outBadgeBg = isDark ? const Color(0xFF261D12) : const Color(0xFFFEF3C7);
+                outBadgeTextCol = isDark ? const Color(0xFFF5A952) : const Color(0xFFB45309);
+              }
+
+              String outStatusText = 'Approved';
+              Color outStatusCol = const Color(0xFF146C43);
+              if (!isBiometricOut && !outGeofence) {
+                if (outStatus == 'Pending TL Approval' || outStatus == 'Pending Approval') {
+                  outStatusText = 'Waiting for TL';
+                  outStatusCol = isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706);
+                } else if (outStatus == 'Pending Manager Approval') {
+                  outStatusText = 'Waiting for Mgr';
+                  outStatusCol = isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB);
+                } else if (outStatus == 'Rejected') {
+                  outStatusText = 'Rejected';
+                  outStatusCol = const Color(0xFFDC2626);
+                } else if (outStatus == 'Approved') {
+                  outStatusText = 'Approved';
+                  outStatusCol = const Color(0xFF146C43);
+                } else {
+                  outStatusText = 'Waiting for TL';
+                  outStatusCol = isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706);
+                }
+              }
+
               return Column(
                 children: [
                   if (idx > 0) const SizedBox(height: 10),
@@ -1442,10 +1541,10 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                                   Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                     decoration: BoxDecoration(
-                                      color: isDark ? const Color(0xFF1F2633) : const Color(0xFFEAEFF8),
+                                      color: inBadgeBg,
                                       borderRadius: BorderRadius.circular(10),
                                     ),
-                                    child: Text('On-Site', style: TextStyle(fontSize: 10, color: textSecondary, fontWeight: FontWeight.w600)),
+                                    child: Text(inBadgeText, style: TextStyle(fontSize: 10, color: inBadgeTextCol, fontWeight: FontWeight.w600)),
                                   ),
                                 ],
                               ),
@@ -1459,7 +1558,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
                             Text(ciStr, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: textPrimary)),
-                            const Text('On Time', style: TextStyle(fontSize: 11, color: Color(0xFF146C43), fontWeight: FontWeight.w700)),
+                            Text(inStatusText, style: TextStyle(fontSize: 11, color: inStatusCol, fontWeight: FontWeight.w700)),
                           ],
                         ),
                       ],
@@ -1498,10 +1597,10 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                                     Container(
                                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                       decoration: BoxDecoration(
-                                        color: isDark ? const Color(0xFF1F2633) : const Color(0xFFEAEFF8),
+                                        color: outBadgeBg,
                                         borderRadius: BorderRadius.circular(10),
                                       ),
-                                      child: Text('Completed', style: TextStyle(fontSize: 10, color: textSecondary, fontWeight: FontWeight.w600)),
+                                      child: Text(outBadgeText, style: TextStyle(fontSize: 10, color: outBadgeTextCol, fontWeight: FontWeight.w600)),
                                     ),
                                   ],
                                 ),
@@ -1514,7 +1613,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               Text(coStr, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: textPrimary)),
-                              const Text('Approved', style: TextStyle(fontSize: 11, color: Color(0xFF146C43), fontWeight: FontWeight.w700)),
+                              Text(outStatusText, style: TextStyle(fontSize: 11, color: outStatusCol, fontWeight: FontWeight.w700)),
                             ],
                           ),
                         ],
