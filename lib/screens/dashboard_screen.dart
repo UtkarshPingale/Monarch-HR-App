@@ -171,7 +171,9 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         // Look for an open active shift strictly for TODAY (sign_out / clock_out is null and clock_in is today)
         final active = data.firstWhere(
           (r) {
-            if (r['clock_out'] != null || r['clock_in'] == null) return false;
+            final hasSignOut = r['clock_out'] != null || 
+                (r['sign_out'] != null && r['sign_out'].toString().isNotEmpty && !r['sign_out'].toString().startsWith('00:00'));
+            if (hasSignOut || r['clock_in'] == null) return false;
             final ci = parseAppDateTime(r['clock_in']);
             return ci != null && ci.year == now.year && ci.month == now.month && ci.day == now.day;
           },
@@ -318,10 +320,22 @@ class HomeScreenTabState extends State<HomeScreenTab> {
       }, token: widget.token);
 
       if (res['error'] != null) {
-        if (res['error'].toString().toLowerCase().contains('token')) {
+        final errStr = res['error'].toString();
+        if (errStr.toLowerCase().contains('token')) {
           widget.onLogout();
+        } else if (errStr.contains('already completed') || errStr.contains('punch out')) {
+          if (mounted) {
+            setState(() {
+              _clockedIn = false;
+              _sessionId = null;
+              _message   = '✅ $errStr';
+            });
+          }
+          _locTimer?.cancel();
+          _checkStatus();
+          _fetchData();
         } else {
-          if (mounted) setState(() => _message = res['error']);
+          if (mounted) setState(() => _message = errStr);
         }
       } else {
         final sessionId = res['session']?['_id']?.toString();
