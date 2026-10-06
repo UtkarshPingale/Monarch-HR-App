@@ -184,6 +184,9 @@ class HomeScreenTabState extends State<HomeScreenTab> {
               _clockedIn   = true;
               _clockInTime = ci ?? DateTime.now();
               _sessionId   = active['id']?.toString() ?? active['_id']?.toString();
+              if (_message != null && _message!.contains('Checked out')) {
+                _message = null;
+              }
             });
             _startLocationLoop();
           }
