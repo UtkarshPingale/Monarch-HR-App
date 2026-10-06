@@ -181,6 +181,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
           final ci = parseAppDateTime(active['clock_in']);
           if (mounted) {
             setState(() {
+              _myRecords   = data;
               _clockedIn   = true;
               _clockInTime = ci ?? DateTime.now();
               _sessionId   = active['id']?.toString() ?? active['_id']?.toString();
@@ -202,7 +203,8 @@ class HomeScreenTabState extends State<HomeScreenTab> {
           );
           if (mounted) {
             setState(() {
-              _clockedIn = false;
+              _myRecords   = data;
+              _clockedIn   = false;
               _clockInTime = todayRecord != null ? parseAppDateTime(todayRecord['clock_in']) : null;
             });
           }
@@ -610,6 +612,17 @@ class HomeScreenTabState extends State<HomeScreenTab> {
       for (var r in todayRecords.reversed) {
         if (r['clock_out'] != null) {
           lastCheckOutToday = parseAppDateTime(r['clock_out']);
+          final st = (r['approval_status'] ?? '').toString();
+          isWaitingApproval = st.startsWith('Pending') || st.contains('Approval');
+          break;
+        } else if (r['sign_out'] != null && r['sign_out'].toString().isNotEmpty && !r['sign_out'].toString().startsWith('00:00')) {
+          final sOutStr = r['sign_out'].toString();
+          final parts = sOutStr.split(':');
+          if (parts.length >= 2) {
+            final h = int.tryParse(parts[0]) ?? 0;
+            final m = int.tryParse(parts[1]) ?? 0;
+            lastCheckOutToday = DateTime(_now.year, _now.month, _now.day, h, m);
+          }
           final st = (r['approval_status'] ?? '').toString();
           isWaitingApproval = st.startsWith('Pending') || st.contains('Approval');
           break;
