@@ -2099,15 +2099,35 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                         Text('Last Check Out', style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w500)),
                         const SizedBox(height: 2),
                         Text(coStr, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary)),
-                        Text(
-                          lastCo != null
-                              ? '$coAmpm • Approved'
-                              : (isToday ? 'Active' : 'Missing Check-Out'),
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: lastCo != null ? textSecondary : (isToday ? const Color(0xFF16A34A) : const Color(0xFFE11D48)),
-                            fontWeight: FontWeight.w700,
-                          ),
+                        Builder(
+                          builder: (_) {
+                            if (lastCo == null) {
+                              return Text(
+                                isToday ? 'Active' : 'Missing Check-Out',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: isToday ? const Color(0xFF16A34A) : const Color(0xFFE11D48),
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              );
+                            }
+                            final lastS = dayShifts.isNotEmpty ? dayShifts.last : null;
+                            final st = (lastS?['approval_status'] ?? 'Approved').toString();
+                            final isPending = st.startsWith('Pending') || st.contains('Approval');
+                            final isRej = st == 'Rejected';
+                            final label = isPending ? '$coAmpm • Pending Approval' : (isRej ? '$coAmpm • Rejected' : '$coAmpm • Approved');
+                            final col = isPending
+                                ? (isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706))
+                                : (isRej ? const Color(0xFFDC2626) : const Color(0xFF146C43));
+                            return Text(
+                              label,
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: col,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            );
+                          },
                         ),
                       ],
                     ),
@@ -3381,13 +3401,16 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
   String _formatPunchInLocation(Map<String, dynamic> s) {
     final explicit = s['clock_in_location'] ?? s['punch_in_location'];
-    if (explicit != null && explicit.toString().trim().isNotEmpty) {
+    if (explicit != null && explicit.toString().trim().isNotEmpty && !explicit.toString().contains('#99')) {
       return explicit.toString();
     }
     final loc = s['location']?.toString() ?? '';
-    if (loc.contains('In #')) {
+    if (loc.contains('In #') && !loc.contains('In #99')) {
       final m = RegExp(r'In #(\d+)').firstMatch(loc);
       if (m != null) return 'Biometric Machine #${m.group(1)}';
+    }
+    if (loc.contains('In #99') || explicit.toString().contains('#99')) {
+      return s['nearest_building'] != null ? 'Mobile Phone (GPS) • ${s['nearest_building']}' : 'Mobile Phone (GPS)';
     }
     if (loc.isNotEmpty) {
       if (loc.startsWith('Biometric Machine')) return 'Biometric Machine';
@@ -3398,13 +3421,19 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
   String _formatPunchOutLocation(Map<String, dynamic> s) {
     final explicit = s['clock_out_location'] ?? s['punch_out_location'];
-    if (explicit != null && explicit.toString().trim().isNotEmpty) {
+    if (explicit != null && explicit.toString().trim().isNotEmpty && !explicit.toString().contains('#99')) {
       return explicit.toString();
     }
     final loc = s['location']?.toString() ?? '';
-    if (loc.contains('Out #')) {
+    if (loc.contains('Out #') && !loc.contains('Out #99')) {
       final m = RegExp(r'Out #(\d+)').firstMatch(loc);
       if (m != null) return 'Biometric Machine #${m.group(1)}';
+    } else if (loc.contains('In #') && !loc.contains('In #99') && !loc.contains('Out #')) {
+      final m = RegExp(r'In #(\d+)').firstMatch(loc);
+      if (m != null) return 'Biometric Machine #${m.group(1)}';
+    }
+    if (loc.contains('Out #99') || loc.contains('In #99') || explicit.toString().contains('#99')) {
+      return s['nearest_building'] != null ? 'Mobile Phone (GPS) • ${s['nearest_building']}' : 'Mobile Phone (GPS)';
     }
     if (s['clock_out_lat'] != null) {
       return s['nearest_building']?.toString() ?? 'Mobile Phone (GPS)';
@@ -3967,8 +3996,11 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     final punchOutLoc = (s['clock_out_location'] ?? s['punch_out_location'])?.toString() ?? '';
 
     final bool isBiometric = isPunchIn
-        ? (locStr.contains('In #') || punchInLoc.contains('Biometric Machine') || (locStr.startsWith('Biometric Machine') && s['clock_in_lat'] == null))
-        : (locStr.contains('Out #') || punchOutLoc.contains('Biometric Machine'));
+        ? ((locStr.contains('In #') && !locStr.contains('In #99')) || 
+           (punchInLoc.contains('Biometric Machine') && !punchInLoc.contains('#99')) || 
+           (locStr.startsWith('Biometric Machine') && !locStr.contains('#99') && s['clock_in_lat'] == null))
+        : ((locStr.contains('Out #') && !locStr.contains('Out #99')) || 
+           (punchOutLoc.contains('Biometric Machine') && !punchOutLoc.contains('#99')));
 
     // 1. Biometric punch is always automatically verified (no approval required)
     if (isBiometric) {

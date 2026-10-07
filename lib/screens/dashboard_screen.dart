@@ -1478,7 +1478,9 @@ class HomeScreenTabState extends State<HomeScreenTab> {
               final inGeofence = r['in_geofence'] == true;
               final inLocStr = r['location']?.toString() ?? '';
               final punchInLoc = (r['clock_in_location'] ?? r['punch_in_location'])?.toString() ?? '';
-              final bool isBiometricIn = inLocStr.contains('In #') || punchInLoc.contains('Biometric Machine') || (inLocStr.startsWith('Biometric Machine') && r['clock_in_lat'] == null);
+              final bool isBiometricIn = (inLocStr.contains('In #') && !inLocStr.contains('In #99')) || 
+                  (punchInLoc.contains('Biometric Machine') && !punchInLoc.contains('#99')) || 
+                  (inLocStr.startsWith('Biometric Machine') && !inLocStr.contains('#99') && r['clock_in_lat'] == null);
               final inStatus = (r['approval_status'] ?? 'Approved').toString();
 
               String inBadgeText = isBiometricIn ? 'On-Site' : (inGeofence ? 'On-Site' : 'Out of Range');
@@ -1495,6 +1497,9 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                 if (inStatus == 'Pending TL Approval' || inStatus == 'Pending Approval') {
                   inStatusText = 'Waiting for TL';
                   inStatusCol = isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706);
+                } else if (inStatus == 'Pending Manager Approval') {
+                  inStatusText = 'Waiting for Mgr';
+                  inStatusCol = isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB);
                 } else if (inStatus == 'Rejected') {
                   inStatusText = 'Rejected';
                   inStatusCol = const Color(0xFFDC2626);
@@ -1507,16 +1512,19 @@ class HomeScreenTabState extends State<HomeScreenTab> {
               final outGeofence = r['clock_out_in_geofence'] == true;
               final outLocStr = r['location']?.toString() ?? '';
               final punchOutLoc = (r['clock_out_location'] ?? r['punch_out_location'])?.toString() ?? '';
-              final bool isBiometricOut = outLocStr.contains('Out #') || punchOutLoc.contains('Biometric Machine');
+              final bool isBiometricOut = (outLocStr.contains('Out #') && !outLocStr.contains('Out #99')) || 
+                  (punchOutLoc.contains('Biometric Machine') && !punchOutLoc.contains('#99'));
               final outStatus = (r['approval_status'] ?? (outGeofence ? 'Approved' : 'Pending TL Approval')).toString();
 
-              String outBadgeText = isBiometricOut ? 'Completed' : (outGeofence ? 'Completed' : 'Out of Range');
-              Color outBadgeBg = isDark ? const Color(0xFF1F2633) : const Color(0xFFEAEFF8);
-              Color outBadgeTextCol = textSecondary;
-              if (!isBiometricOut && !outGeofence) {
-                outBadgeBg = isDark ? const Color(0xFF261D12) : const Color(0xFFFEF3C7);
-                outBadgeTextCol = isDark ? const Color(0xFFF5A952) : const Color(0xFFB45309);
-              }
+              final bool isOutPending = !isBiometricOut && !outGeofence && (outStatus.startsWith('Pending') || outStatus.contains('Approval'));
+
+              String outBadgeText = isBiometricOut || outGeofence ? 'On-Site' : 'Out of Range';
+              Color outBadgeBg = isOutPending
+                  ? (isDark ? const Color(0xFF261D12) : const Color(0xFFFEF3C7))
+                  : (isDark ? const Color(0xFF1F2633) : const Color(0xFFEAEFF8));
+              Color outBadgeTextCol = isOutPending
+                  ? (isDark ? const Color(0xFFF5A952) : const Color(0xFFB45309))
+                  : textSecondary;
 
               String outStatusText = 'Approved';
               Color outStatusCol = const Color(0xFF146C43);
@@ -1533,10 +1541,13 @@ class HomeScreenTabState extends State<HomeScreenTab> {
                 } else if (outStatus == 'Approved') {
                   outStatusText = 'Approved';
                   outStatusCol = const Color(0xFF146C43);
-                } else {
-                  outStatusText = 'Waiting for TL';
-                  outStatusCol = isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706);
                 }
+              } else if (outStatus == 'Rejected') {
+                outStatusText = 'Rejected';
+                outStatusCol = const Color(0xFFDC2626);
+              } else {
+                outStatusText = 'Approved';
+                outStatusCol = const Color(0xFF146C43);
               }
 
               return Column(
