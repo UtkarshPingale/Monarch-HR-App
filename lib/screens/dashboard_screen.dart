@@ -357,7 +357,8 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         if (sessionId != null) {
           saveRouteToDB(sessionId, widget.token);
         }
-        _fetchData();
+        await _fetchData();
+        await _checkStatus();
       }
     } catch (_) {
       if (mounted) setState(() => _message = 'Server connection error.');

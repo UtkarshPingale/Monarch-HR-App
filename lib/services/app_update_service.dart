@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -213,8 +214,10 @@ class AppUpdateService {
           return true;
         } else {
           if (!silent && context.mounted) {
-            ScaffoldMessenger.of(context).hideCurrentSnackBar();
-            ScaffoldMessenger.of(context).showSnackBar(
+            final messenger = ScaffoldMessenger.of(context);
+            messenger.removeCurrentSnackBar();
+            messenger.clearSnackBars();
+            messenger.showSnackBar(
               SnackBar(
                 content: Row(
                   children: [
@@ -241,11 +244,18 @@ class AppUpdateService {
                   },
                 ),
                 backgroundColor: const Color(0xFF1B7047),
-                duration: const Duration(seconds: 5),
+                duration: const Duration(seconds: 3),
                 behavior: SnackBarBehavior.floating,
+                dismissDirection: DismissDirection.horizontal,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),
             );
+            // Hard fallback timer ensuring snackbar dismisses after 4 seconds even with SnackBarAction present
+            Timer(const Duration(seconds: 4), () {
+              try {
+                messenger.hideCurrentSnackBar();
+              } catch (_) {}
+            });
           }
           return false;
         }
