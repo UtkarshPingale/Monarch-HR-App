@@ -231,18 +231,6 @@ class AppUpdateService {
                     ),
                   ],
                 ),
-                action: SnackBarAction(
-                  label: 'Store Page',
-                  textColor: const Color(0xFFFDE68A),
-                  onPressed: () {
-                    openStore(
-                      context: context,
-                      customUrl: downloadUrl,
-                      playStoreUrl: playStoreUrl,
-                      appStoreUrl: appStoreUrl,
-                    );
-                  },
-                ),
                 backgroundColor: const Color(0xFF1B7047),
                 duration: const Duration(seconds: 3),
                 behavior: SnackBarBehavior.floating,
@@ -250,12 +238,6 @@ class AppUpdateService {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
               ),
             );
-            // Hard fallback timer ensuring snackbar dismisses after 4 seconds even with SnackBarAction present
-            Timer(const Duration(seconds: 4), () {
-              try {
-                messenger.hideCurrentSnackBar();
-              } catch (_) {}
-            });
           }
           return false;
         }
