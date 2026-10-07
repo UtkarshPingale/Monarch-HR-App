@@ -37,7 +37,6 @@ class AppUpdateDialog extends StatelessWidget {
 
     if (isIos) {
       const String appStoreScheme = 'itms-apps://apps.apple.com/app/monarch-hr/id6815123696';
-
       const String appStoreWeb = 'https://apps.apple.com/app/monarch-hr/id6815123696';
       final String iosTarget = (appStoreUrl ?? downloadUrl).trim();
 
