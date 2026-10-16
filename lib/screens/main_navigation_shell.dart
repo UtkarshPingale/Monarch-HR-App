@@ -37,17 +37,19 @@ class _MainNavigationContainerState extends State<MainNavigationContainer> {
   final GlobalKey<ExploreTabState> _exploreKey = GlobalKey<ExploreTabState>();
 
   bool get _isLeaderOrManager {
-    final role = (widget.user['role'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
-    return role == 'teamleader' ||
-        role == 'subteamlead' ||
-        role == 'seniorteamlead' ||
-        role == 'seniorteamleader' ||
-        role == 'manager' ||
-        role == 'projectmanager' ||
-        role == 'admin' ||
-        role == 'hr' ||
+    final r = (widget.user['role'] ?? '').toString();
+    final d = (widget.user['designation'] ?? '').toString();
+    final role = '$r $d'.toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
+    return role.contains('teamleader') ||
+        role.contains('subteamlead') ||
+        role.contains('seniorteamlead') ||
+        role.contains('manager') ||
+        role.contains('projectmanager') ||
+        role.contains('admin') ||
+        role.contains('hr') ||
         role.contains('leader') ||
-        role.contains('lead');
+        role.contains('lead') ||
+        role.contains('tl');
   }
 
   @override

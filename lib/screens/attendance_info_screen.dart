@@ -4216,11 +4216,11 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Company Geofence Range (20 Meters)',
+                          'Unified Office Campus Geofence Zone',
                           style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: textPrimary),
                         ),
                         Text(
-                          'Punches logged > 20m from company centers require 2-Level verification (TL → Manager)',
+                          'Unified campus perimeter enclosing Morya Palace, KK Empire, and Monarch House HQ',
                           style: TextStyle(fontSize: 11, color: textSecondary),
                         ),
                       ],

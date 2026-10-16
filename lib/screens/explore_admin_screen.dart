@@ -50,19 +50,25 @@ class ExploreTabState extends State<ExploreTab> {
   Timer? _autoSyncTimer;
   double _leavesDragDeltaX = 0;
 
+  String get _combinedRoleStr {
+    final r = (widget.user['role'] ?? '').toString();
+    final d = (widget.user['designation'] ?? '').toString();
+    return '$r $d'.toLowerCase();
+  }
+
   bool get _isManager {
-    final r = (widget.user['role'] ?? '').toString().toLowerCase();
+    final r = _combinedRoleStr;
     return r.contains('manager') || r.contains('director') || r.contains('hr');
   }
 
   bool get _isSeniorTeamLeader {
-    final r = (widget.user['role'] ?? '').toString().toLowerCase();
+    final r = _combinedRoleStr;
     return (r.contains('senior') || r.contains('sr') || r.contains('sinor') || r.contains('snr')) &&
         (r.contains('lead') || r.contains('tl') || r.contains('leader') || r.contains('head') || r.contains('manager'));
   }
 
   bool get _isTeamLeader {
-    final r = (widget.user['role'] ?? '').toString().toLowerCase();
+    final r = _combinedRoleStr;
     return r.contains('lead') || r.contains('tl') || r.contains('head') || r.contains('leader');
   }
 
@@ -2531,7 +2537,7 @@ class ExploreTabState extends State<ExploreTab> {
                       borderCol,
                       textPrimary,
                       textSecondary,
-                      canAction: !isMgr,
+                      canAction: true,
                     )),
             ],
           ),

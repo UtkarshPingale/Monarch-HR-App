@@ -222,9 +222,7 @@ class HomeScreenTabState extends State<HomeScreenTab> {
 
       final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _locTimer?.cancel();
-        await _clockOut();
-        return;
+        return; // Skip sending location update if GPS is disabled without auto-checking out
       }
 
       final pos = await getPosition();
