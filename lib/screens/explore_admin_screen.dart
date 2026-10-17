@@ -463,6 +463,7 @@ class ExploreTabState extends State<ExploreTab> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: dialogBg,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
@@ -475,15 +476,19 @@ class ExploreTabState extends State<ExploreTab> {
             final isLossOfPay = selectedLeaveType == 'Loss Of Pay';
             final isEarnedLeave = selectedLeaveType == 'Earned Leave';
             final isRegularization = selectedLeaveType == 'Regularization';
+            final systemNavBottom = MediaQuery.of(ctx).padding.bottom;
 
-            return SingleChildScrollView(
-              padding: EdgeInsets.only(
-                top: 16,
-                left: 20,
-                right: 20,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
-              ),
-              child: Column(
+            return SafeArea(
+              top: false,
+              bottom: true,
+              child: SingleChildScrollView(
+                padding: EdgeInsets.only(
+                  top: 16,
+                  left: 20,
+                  right: 20,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + (systemNavBottom > 0 ? systemNavBottom + 24 : 36),
+                ),
+                child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1092,11 +1097,12 @@ class ExploreTabState extends State<ExploreTab> {
                   ),
                 ],
               ),
-            );
-          },
-        );
-      },
-    );
+            ),
+          );
+        },
+      );
+    },
+  );
   }
 
   void _showAddHolidayDialog(bool isDark) {

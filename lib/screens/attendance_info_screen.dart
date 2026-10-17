@@ -2717,6 +2717,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: dialogBg,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
@@ -2729,15 +2730,19 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
             final isLossOfPay = selectedLeaveType == 'Loss Of Pay';
             final isEarnedLeave = selectedLeaveType == 'Earned Leave';
             final isRegularization = selectedLeaveType == 'Regularization';
+            final systemNavBottom = MediaQuery.of(ctx).padding.bottom;
 
-            return SingleChildScrollView(
-              padding: EdgeInsets.only(
-                top: 16,
-                left: 20,
-                right: 20,
-                bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
-              ),
-              child: Column(
+            return SafeArea(
+              top: false,
+              bottom: true,
+              child: SingleChildScrollView(
+                padding: EdgeInsets.only(
+                  top: 16,
+                  left: 20,
+                  right: 20,
+                  bottom: MediaQuery.of(ctx).viewInsets.bottom + (systemNavBottom > 0 ? systemNavBottom + 24 : 36),
+                ),
+                child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -3340,11 +3345,12 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   ),
                 ],
               ),
-            );
-          },
-        );
-      },
-    );
+            ),
+          );
+        },
+      );
+    },
+  );
   }
 
   Widget _timelineTile(

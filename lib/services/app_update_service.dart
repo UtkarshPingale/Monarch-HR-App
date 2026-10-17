@@ -4,12 +4,13 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:in_app_update/in_app_update.dart';
 import '../config/api_config.dart';
 
 class AppUpdateService {
   // Current app release version & build number (dynamically resolved from device package info)
-  static String _currentVersionName = "1.0.3";
-  static int _currentVersionCode = 7;
+  static String _currentVersionName = "1.0.6";
+  static int _currentVersionCode = 14;
   static bool _initialized = false;
 
   static String get currentVersionName => _currentVersionName;
@@ -28,6 +29,16 @@ class AppUpdateService {
         _currentVersionCode = bn;
       }
       _initialized = true;
+
+      // Check if a background flexible Play Store update finished downloading
+      if (!kIsWeb && Platform.isAndroid) {
+        try {
+          final updateInfo = await InAppUpdate.checkForUpdate();
+          if (updateInfo.installStatus == InstallStatus.downloaded) {
+            await InAppUpdate.completeFlexibleUpdate();
+          }
+        } catch (_) {}
+      }
     } catch (_) {
       // Fallback to default constants if platform channel fails
     }
@@ -175,11 +186,58 @@ class AppUpdateService {
     await openStore(context: context, customUrl: customUrl);
   }
 
-  /// Compares version string or version code and directly launches the store (Play Store for Android, App Store for iOS)
+  /// Directly calls the Google Play In-App Updates API (Immediate or Flexible).
+  /// Works natively on Android devices when the app is installed from Google Play.
+  /// Returns true if an update was found and successfully triggered.
+  static Future<bool> performPlayStoreInAppUpdate({bool immediate = true}) async {
+    if (kIsWeb || !Platform.isAndroid) return false;
+    try {
+      final AppUpdateInfo info = await InAppUpdate.checkForUpdate();
+
+      // If a flexible update was previously downloaded, install and restart
+      if (info.installStatus == InstallStatus.downloaded) {
+        await InAppUpdate.completeFlexibleUpdate();
+        return true;
+      }
+
+      if (info.updateAvailability == UpdateAvailability.updateAvailable) {
+        if (immediate && info.immediateUpdateAllowed) {
+          final result = await InAppUpdate.performImmediateUpdate();
+          return result == AppUpdateResult.success;
+        } else if (info.flexibleUpdateAllowed) {
+          final result = await InAppUpdate.startFlexibleUpdate();
+          if (result == AppUpdateResult.success) {
+            await InAppUpdate.completeFlexibleUpdate();
+            return true;
+          }
+        } else if (info.immediateUpdateAllowed) {
+          final result = await InAppUpdate.performImmediateUpdate();
+          return result == AppUpdateResult.success;
+        }
+      }
+    } catch (e) {
+      debugPrint('[PlayStoreInAppUpdate] Skipped or not applicable: $e');
+    }
+    return false;
+  }
+
+  /// Checks for updates.
+  /// 1. Tries Google Play In-App Update API directly on Android.
+  /// 2. If running outside Play Store (sideloaded, iOS, or dev), checks /api/app/version and prompts.
   static Future<bool> checkForUpdates(
     BuildContext context, {
     bool silent = true,
+    bool preferImmediate = true,
   }) async {
+    // 1. First attempt Google Play Store In-App Update on Android
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        final bool playHandled = await performPlayStoreInAppUpdate(immediate: preferImmediate);
+        if (playHandled) return true;
+      } catch (_) {}
+    }
+
+    // 2. Fallback to API check (/api/app/version) for iOS, Sideloaded APK, or Dev Builds
     try {
       await init();
       final String platform = (!kIsWeb && Platform.isIOS) ? 'ios' : 'android';
@@ -190,6 +248,7 @@ class AppUpdateService {
         final downloadUrl = res['download_url']?.toString() ?? '';
         final playStoreUrl = res['play_store_url']?.toString() ?? '';
         final appStoreUrl = res['app_store_url']?.toString() ?? '';
+        final isForceUpdate = res['is_force_update'] == true;
 
         final int versionLag = calculateVersionLag(
           newVersionName,
@@ -204,12 +263,26 @@ class AppUpdateService {
 
         if (isUpdateAvailable) {
           if (context.mounted) {
-            await openStore(
-              context: context,
-              customUrl: downloadUrl,
-              playStoreUrl: playStoreUrl,
-              appStoreUrl: appStoreUrl,
-            );
+            if (isForceUpdate) {
+              await _showMandatoryUpdateDialog(
+                context,
+                newVersionName: newVersionName,
+                releaseNotes: res['release_notes']?.toString(),
+                onUpdate: () => openStore(
+                  context: context,
+                  customUrl: downloadUrl,
+                  playStoreUrl: playStoreUrl,
+                  appStoreUrl: appStoreUrl,
+                ),
+              );
+            } else if (!silent) {
+              await openStore(
+                context: context,
+                customUrl: downloadUrl,
+                playStoreUrl: playStoreUrl,
+                appStoreUrl: appStoreUrl,
+              );
+            }
           }
           return true;
         } else {
@@ -262,6 +335,62 @@ class AppUpdateService {
       }
     }
     return false;
+  }
+
+  /// Displays an un-dismissible popup when a force update is configured on the backend
+  static Future<void> _showMandatoryUpdateDialog(
+    BuildContext context, {
+    required String newVersionName,
+    String? releaseNotes,
+    required VoidCallback onUpdate,
+  }) async {
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Row(
+              children: [
+                Icon(Icons.system_update_rounded, color: Color(0xFFF5A952), size: 28),
+                SizedBox(width: 10),
+                Text('Update Required', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'A critical update to Monarch HR (v$newVersionName) is required to continue.',
+                  style: const TextStyle(fontSize: 14),
+                ),
+                if (releaseNotes != null && releaseNotes.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text('What\'s new:', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                  const SizedBox(height: 4),
+                  Text(releaseNotes, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                ],
+              ],
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFF5A952),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                ),
+                onPressed: onUpdate,
+                child: const Text('Update Now', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   /// Helper to compare semver like "1.0.5" vs "1.0.4"

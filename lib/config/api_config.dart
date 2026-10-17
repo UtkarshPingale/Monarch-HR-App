@@ -90,7 +90,7 @@ Future<Position?> getPosition() async {
       onTimeout: () => false,
     );
     if (!svc) {
-      return await Geolocator.getLastKnownPosition();
+      return null;
     }
     LocationPermission perm = await Geolocator.checkPermission().timeout(
       const Duration(seconds: 3),
@@ -102,11 +102,11 @@ Future<Position?> getPosition() async {
         onTimeout: () => LocationPermission.denied,
       );
       if (perm == LocationPermission.denied) {
-        return await Geolocator.getLastKnownPosition();
+        return null;
       }
     }
     if (perm == LocationPermission.deniedForever) {
-      return await Geolocator.getLastKnownPosition();
+      return null;
     }
 
     try {
@@ -118,6 +118,6 @@ Future<Position?> getPosition() async {
       return await Geolocator.getLastKnownPosition();
     }
   } catch (_) {
-    return await Geolocator.getLastKnownPosition();
+    return null;
   }
 }

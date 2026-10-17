@@ -1384,6 +1384,7 @@ class _EngageTabState extends State<EngageTab> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => _PasswordChangeSheet(
         token: widget.token,
@@ -1604,6 +1605,8 @@ class _PasswordChangeSheetState extends State<_PasswordChangeSheet> {
     const amberPrimary = Color(0xFFF5A952);
     const amberDark = Color(0xFF895100);
 
+    final navBarPadding = MediaQuery.of(context).padding.bottom;
+
     return Container(
       decoration: BoxDecoration(
         color: bgCard,
@@ -1620,7 +1623,7 @@ class _PasswordChangeSheetState extends State<_PasswordChangeSheet> {
         left: 20,
         right: 20,
         top: 14,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+        bottom: MediaQuery.of(context).viewInsets.bottom + (navBarPadding > 0 ? navBarPadding + 20 : 28),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,

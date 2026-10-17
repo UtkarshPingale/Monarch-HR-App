@@ -14,6 +14,7 @@ class WorkEntrySheet extends StatefulWidget {
     return showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: Colors.transparent,
       builder: (_) => WorkEntrySheet(token: token, onSaved: onSaved),
     );
@@ -401,6 +402,7 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
     ];
 
     final keyboardInset = MediaQuery.of(context).viewInsets.bottom;
+    final navBarPadding = MediaQuery.of(context).padding.bottom;
     final screenHeight = MediaQuery.of(context).size.height;
 
     return Padding(
@@ -418,6 +420,7 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
         ),
         child: SafeArea(
           top: false,
+          bottom: true,
           child: Column(
             children: [
               // Handle Bar
@@ -442,7 +445,12 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
               Expanded(
                 child: ListView(
                   keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                  padding: EdgeInsets.only(
+                    left: 18,
+                    right: 18,
+                    top: 12,
+                    bottom: (navBarPadding > 0 ? navBarPadding + 28 : 36),
+                  ),
                   children: [
                   // ── Top Card: WORK DATE & PROJECT ID ─────────────────────────
                   Container(
@@ -994,7 +1002,7 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
                     ],
                   ),
 
-                  const SizedBox(height: 16),
+                  SizedBox(height: (navBarPadding > 0 ? navBarPadding + 24 : 30)),
                 ],
               ),
             ),

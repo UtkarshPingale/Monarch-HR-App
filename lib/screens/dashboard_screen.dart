@@ -8,6 +8,7 @@ import '../services/date_time_helper.dart';
 import '../widgets/semicircle_gauge_painter.dart';
 import '../widgets/profile_avatar_badge.dart';
 import '../widgets/work_entry_sheet.dart';
+import '../services/app_update_service.dart';
 
 // ── MonarchHR Front Home Dashboard Page ───────────────────────────────────────
 class HomeScreenTab extends StatefulWidget {
@@ -71,6 +72,12 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         _checkStatus();
         _fetchLeavesData();
         _fetchTeamApprovalsCount();
+      }
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        AppUpdateService.checkForUpdates(context, silent: true);
       }
     });
   }
@@ -309,11 +316,48 @@ class HomeScreenTabState extends State<HomeScreenTab> {
   Future<void> _clockOut() async {
     setState(() { _loading = true; _message = null; });
 
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      if (mounted) {
+        setState(() {
+          _message = '⚠ Please turn ON location/GPS before checking out.';
+          _loading = false;
+        });
+      }
+      await Geolocator.openLocationSettings();
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      if (mounted) {
+        setState(() {
+          _message = '⚠ Location permission required to check out.';
+          _loading = false;
+        });
+      }
+      return;
+    }
+
     try {
       final pos = await getPosition();
+      if (pos == null) {
+        if (mounted) {
+          setState(() {
+            _message = '⚠ Unable to obtain GPS position. Please ensure location is enabled and try again.';
+            _loading = false;
+          });
+        }
+        await Geolocator.openLocationSettings();
+        return;
+      }
+
       final res = await apiPost('/api/attendance/clock-out', {
-        'lat': pos?.latitude,
-        'lng': pos?.longitude,
+        'lat': pos.latitude,
+        'lng': pos.longitude,
         'client_time': DateTime.now().toIso8601String(),
       }, token: widget.token);
 
