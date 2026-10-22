@@ -137,6 +137,8 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
 
   bool _isSaving = false;
   bool _isLoadingOptions = false;
+  bool _isPmsUser = true;
+  String? _pmsUserError;
 
   @override
   void initState() {
@@ -149,6 +151,14 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
     try {
       final res = await apiGetJson('/api/work-entries/form-options', token: widget.token);
       if (res is Map && mounted) {
+        if (res['is_pms_user'] == false) {
+          _isPmsUser = false;
+          _pmsUserError = res['pms_error']?.toString() ?? 'Employee ID not found in PMS user directory. Work entry submission is disabled.';
+        } else {
+          _isPmsUser = true;
+          _pmsUserError = null;
+        }
+
         if (res['projects'] is List && (res['projects'] as List).isNotEmpty) {
           final pList = (res['projects'] as List)
               .map((p) => {
@@ -273,6 +283,17 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
   }
 
   Future<void> _saveWorkEntry() async {
+    if (!_isPmsUser) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_pmsUserError ?? 'Employee does not exist in PMS. Work entry cannot be submitted.'),
+          backgroundColor: const Color(0xFFBA1A1A),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
     final qty = double.tryParse(_qtyCtrl.text.trim()) ?? 0.0;
     final hrs = _parsedHours;
     final mins = _parsedMinutes;
@@ -452,7 +473,35 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
                     bottom: (navBarPadding > 0 ? navBarPadding + 28 : 36),
                   ),
                   children: [
-                  // ── Top Card: WORK DATE & PROJECT ID ─────────────────────────
+                    // ── PMS Status Warning Banner ──────────────────────────────
+                    if (!_isPmsUser)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 14),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFBA1A1A).withAlpha(20),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: const Color(0xFFBA1A1A).withAlpha(80)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.error_outline_rounded, color: Color(0xFFBA1A1A), size: 22),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                _pmsUserError ?? 'Employee ID does not exist in PMS user directory. Work entry is restricted.',
+                                style: const TextStyle(
+                                  color: Color(0xFFBA1A1A),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    // ── Top Card: WORK DATE & PROJECT ID ─────────────────────────
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -980,7 +1029,7 @@ class _WorkEntrySheetState extends State<WorkEntrySheet> {
                       Expanded(
                         flex: 2,
                         child: ElevatedButton.icon(
-                          onPressed: _isSaving ? null : _saveWorkEntry,
+                          onPressed: (_isSaving || !_isPmsUser) ? null : _saveWorkEntry,
                           icon: _isSaving
                               ? const SizedBox(
                                   width: 16,

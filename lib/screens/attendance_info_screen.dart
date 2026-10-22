@@ -1244,13 +1244,16 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                   }).toList();
 
                   int totalMins = 0;
-                  bool hasSession1 = false; // 09:30 - 13:30
-                  bool hasSession2 = false; // 13:31 - 18:30
                   bool hasMissingPunchOut = false;
+                  DateTime? firstCi;
+                  DateTime? lastCo;
 
                   for (var s in dayShifts) {
                     final ci = s['clock_in'] != null ? parseAppDateTime(s['clock_in']) : null;
                     final co = s['clock_out'] != null ? parseAppDateTime(s['clock_out']) : null;
+
+                    if (ci != null && (firstCi == null || ci.isBefore(firstCi))) firstCi = ci;
+                    if (co != null && (lastCo == null || co.isAfter(lastCo))) lastCo = co;
 
                     if (s['total_minutes'] != null && (s['total_minutes'] as num) > 0) {
                       totalMins += (s['total_minutes'] as num).toInt();
@@ -1262,17 +1265,32 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     } else if (isPast && ci != null && co == null) {
                       hasMissingPunchOut = true;
                     }
+                  }
 
-                    if (ci != null) {
-                      if (ci.hour < 13 || (ci.hour == 13 && ci.minute <= 30)) {
-                        hasSession1 = true;
-                      }
-                      if (ci.hour > 13 || (ci.hour == 13 && ci.minute > 30)) {
-                        hasSession2 = true;
-                      }
+                  // Session 1 (morning) vs Session 2 (afternoon) half-day determination:
+                  // User rule:
+                  // - If user takes half day in 1st half (morning) -> Absent 1st, Present 2nd -> A:P
+                  // - If user takes half day in 2nd half (afternoon) -> Present 1st, Absent 2nd -> P:A
+                  bool isFirstHalfLeave = false;
+                  if (dayLeave != null) {
+                    final lSess = '${dayLeave['session'] ?? ''} ${dayLeave['from_session'] ?? ''} ${dayLeave['to_session'] ?? ''} ${dayLeave['title'] ?? ''} ${dayLeave['note'] ?? ''}'.toLowerCase();
+                    if (lSess.contains('session 1') || lSess.contains('first half') || lSess.contains('1st half') || lSess.contains('morning')) {
+                      isFirstHalfLeave = true;
+                    } else if (lSess.contains('session 2') || lSess.contains('second half') || lSess.contains('2nd half') || lSess.contains('afternoon')) {
+                      isFirstHalfLeave = false;
                     }
-                    if (co != null && (co.hour >= 17)) {
-                      hasSession2 = true;
+                  } else if (firstCi != null) {
+                    final ciHour = firstCi.hour + (firstCi.minute / 60.0);
+                    final coHour = lastCo != null ? (lastCo.hour + (lastCo.minute / 60.0)) : null;
+
+                    // Arrived late/afternoon (>= 11:30 AM e.g. 12:02 PM) and worked evening -> took 1st half leave -> A:P
+                    if (ciHour >= 11.5 && (coHour == null || coHour >= 16.0)) {
+                      isFirstHalfLeave = true;
+                    } else if (ciHour < 11.5 && coHour != null && coHour < 17.0) {
+                      // Arrived morning and left early (< 5:00 PM) -> took 2nd half leave -> P:A
+                      isFirstHalfLeave = false;
+                    } else if (ciHour >= 11.5) {
+                      isFirstHalfLeave = true;
                     }
                   }
 
@@ -1330,16 +1348,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                     bg = isDark ? const Color(0xFF11221E) : const Color(0xFFE8F5E9);
                     tagColor = isDark ? const Color(0xFF34D399) : const Color(0xFF146C43);
                   } else if (totalMins >= 180 || (dayShifts.any((s) => s['clock_out'] != null) && totalMins > 0)) {
-                    if (hasSession1 && !hasSession2) {
-                      mainTag = 'P:A';
-                      subTag = 'HALF';
-                    } else if (!hasSession1 && hasSession2) {
-                      mainTag = 'A:P';
-                      subTag = 'HALF';
-                    } else {
-                      mainTag = 'P:A';
-                      subTag = 'HALF';
-                    }
+                    mainTag = isFirstHalfLeave ? 'A:P' : 'P:A';
+                    subTag = 'HALF';
                     bg = isDark ? const Color(0xFF241C14) : const Color(0xFFFFF3E0);
                     tagColor = isDark ? const Color(0xFFFBA442) : const Color(0xFF895100);
                   } else if (isPast) {
@@ -1554,17 +1564,20 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
       final coAmpm = lastCo != null ? DateFormat('a').format(lastCo) : '';
 
       int totalMinsAllShifts = 0;
-      bool hasSession1 = false;
-      bool hasSession2 = false;
-
       final now = DateTime.now();
       final isToday = dt.year == now.year && dt.month == now.month && dt.day == now.day;
       final bool hasActiveShift = isToday && dayShifts.any((s) => s['clock_out'] == null);
       final bool isShiftActive = hasActiveShift;
 
+      DateTime? detailFirstCi;
+      DateTime? detailLastCo;
+
       for (var s in dayShifts) {
         final ci = parseAppDateTime(s['clock_in']);
         final co = parseAppDateTime(s['clock_out']);
+        if (ci != null && (detailFirstCi == null || ci.isBefore(detailFirstCi))) detailFirstCi = ci;
+        if (co != null && (detailLastCo == null || co.isAfter(detailLastCo))) detailLastCo = co;
+
         if (s['total_minutes'] != null && s['total_minutes'] > 0) {
           totalMinsAllShifts += (s['total_minutes'] as int);
         } else if (ci != null && co != null) {
@@ -1573,11 +1586,28 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
           final elapsed = now.difference(ci).inMinutes;
           if (elapsed > 0) totalMinsAllShifts += elapsed;
         }
-        if (ci != null) {
-          if (ci.hour < 13 || (ci.hour == 13 && ci.minute <= 30)) hasSession1 = true;
-          if (ci.hour > 13 || (ci.hour == 13 && ci.minute > 30)) hasSession2 = true;
+      }
+
+      // Check if employee took half day in 1st half (worked Session 2) or 2nd half (worked Session 1)
+      bool detailIsFirstHalfLeave = false;
+      if (leave != null) {
+        final lSess = '${leave['session'] ?? ''} ${leave['from_session'] ?? ''} ${leave['to_session'] ?? ''} ${leave['title'] ?? ''} ${leave['note'] ?? ''}'.toLowerCase();
+        if (lSess.contains('session 1') || lSess.contains('first half') || lSess.contains('1st half') || lSess.contains('morning')) {
+          detailIsFirstHalfLeave = true;
+        } else if (lSess.contains('session 2') || lSess.contains('second half') || lSess.contains('2nd half') || lSess.contains('afternoon')) {
+          detailIsFirstHalfLeave = false;
         }
-        if (co != null && co.hour >= 17) hasSession2 = true;
+      } else if (detailFirstCi != null) {
+        final ciHour = detailFirstCi.hour + (detailFirstCi.minute / 60.0);
+        final coHour = detailLastCo != null ? (detailLastCo.hour + (detailLastCo.minute / 60.0)) : null;
+
+        if (ciHour >= 11.5 && (coHour == null || coHour >= 16.0)) {
+          detailIsFirstHalfLeave = true;
+        } else if (ciHour < 11.5 && coHour != null && coHour < 17.0) {
+          detailIsFirstHalfLeave = false;
+        } else if (ciHour >= 11.5) {
+          detailIsFirstHalfLeave = true;
+        }
       }
 
       final bool isPastDay = !isToday && dt.isBefore(DateTime(now.year, now.month, now.day));
@@ -1701,7 +1731,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
                             Text(
-                              hasSession1 && !hasSession2 ? 'Half Day (Session 1)' : (hasSession2 ? 'Half Day (Session 2)' : 'Half Day Shift'),
+                              detailIsFirstHalfLeave ? 'Half Day (Session 2)' : 'Half Day (Session 1)',
                               style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: isDark ? const Color(0xFFF5A952) : const Color(0xFF895100)),
                             ),
                             Text('• 0.5 Day Count', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: isDark ? const Color(0xFFFBBF24) : const Color(0xFFB45309))),
@@ -1830,8 +1860,8 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                                       context,
                                       initialDate: dt,
                                       initialToDate: dt,
-                                      initialFromSession: hasSession1 ? 'Session 2' : 'Session 1',
-                                      initialToSession: hasSession1 ? 'Session 2' : 'Session 1',
+                                      initialFromSession: 'Session 2',
+                                      initialToSession: 'Session 2',
                                       initialType: 'Earned Leave',
                                       initialTitle: 'Half Day Leave (Forgot Punch Out)',
                                       initialNote: 'Took half day and missed punch out on $headerDateStr.',
@@ -1858,127 +1888,201 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
                 if (isHalfDay) ...[
                   const SizedBox(height: 16),
-                  if (leave != null)
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF26151B) : const Color(0xFFFCE4EC),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: isDark ? const Color(0xFF3F1D27) : const Color(0xFFF48FB1)),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.beach_access_rounded, color: isDark ? const Color(0xFFFB7185) : const Color(0xFFB91C68), size: 22),
-                          const SizedBox(width: 10),
-                          Expanded(
+                  if (leave != null) ...[
+                    Builder(
+                      builder: (context) {
+                        final l = leave!;
+                        final lType = (l['leave_type'] ?? '').toString();
+                        final isReg = lType.toLowerCase().contains('regula') || (l['title'] ?? '').toString().toLowerCase().contains('joining');
+                        final st = (l['status'] ?? 'Pending Review').toString();
+                        final note = (l['note'] ?? '').toString().trim();
+
+                        if (isReg) {
+                          return Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: isDark ? const Color(0xFF132338) : const Color(0xFFEFF6FF),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: isDark ? const Color(0xFF1E3A8A) : const Color(0xFFBFDBFE)),
+                            ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text('Leave Linked: ${leave['title'] ?? leave['leave_type']}',
-                                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: isDark ? const Color(0xFFFB7185) : const Color(0xFF880E4F))),
-                                Text('${leave['leave_type'] ?? 'Earned Leave'} • Status: ${leave['status'] ?? 'Approved'}',
-                                    style: TextStyle(fontSize: 11, color: isDark ? const Color(0xFFF43F5E) : const Color(0xFFAD1457), fontWeight: FontWeight.w500)),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  else
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF241C12) : const Color(0xFFFFFBEB),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: isDark ? const Color(0xFF3B2A18) : const Color(0xFFFDE68A)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Icon(Icons.warning_amber_rounded, color: isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706), size: 20),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                Row(
                                   children: [
-                                    Text(
-                                      hasSession1 && !hasSession2
-                                          ? 'Session 2 unrecorded ($hrsStr hrs worked). Apply a half-day leave or regularization.'
-                                          : (!hasSession1 && hasSession2
-                                              ? 'Session 1 unrecorded ($hrsStr hrs worked). Apply a half-day leave or regularization.'
-                                              : 'Short attendance recorded ($hrsStr hrs). Apply a half-day leave or regularization.'),
-                                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: isDark ? const Color(0xFFFBBF24) : const Color(0xFF92400E)),
+                                    Icon(Icons.edit_calendar_rounded, color: isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB), size: 22),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text('Attendance Regularization: ${l['title'] ?? 'Regularization Request'}',
+                                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: isDark ? const Color(0xFF93C5FD) : const Color(0xFF1E40AF))),
+                                          Text('Regularization • Status: $st',
+                                              style: TextStyle(fontSize: 11, color: isDark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB), fontWeight: FontWeight.w600)),
+                                        ],
+                                      ),
                                     ),
-                                    const SizedBox(height: 3),
-                                    Text(
-                                      '💡 Regularization gives up to 2 hrs early leave concession with manager approval.',
-                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: textSecondary),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: isDark ? const Color(0xFF1E3A8A).withAlpha(120) : const Color(0xFFDBEAFE),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: Text(
+                                        st,
+                                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: isDark ? const Color(0xFF93C5FD) : const Color(0xFF1D4ED8)),
+                                      ),
                                     ),
                                   ],
                                 ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: () {
-                                    _showApplyLeaveModal(
-                                      context,
-                                      initialDate: dt,
-                                      initialToDate: dt,
-                                      initialFromSession: hasSession1 ? 'Session 2' : 'Session 1',
-                                      initialToSession: hasSession1 ? 'Session 2' : 'Session 1',
-                                      initialType: 'Earned Leave',
-                                      initialTitle: 'Half Day Leave',
-                                      initialNote: 'Half day taken on $headerDateStr.',
-                                      isDark: isDark,
-                                    );
-                                  },
-                                  icon: const Icon(Icons.beach_access_rounded, size: 14),
-                                  label: const Text('Apply Half Day Leave', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11)),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: amberPrimary,
-                                    foregroundColor: amberDark,
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
-                                    elevation: 0,
+                                if (note.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                    decoration: BoxDecoration(
+                                      color: isDark ? const Color(0xFF0F172A).withAlpha(100) : Colors.white.withAlpha(180),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      '“$note”',
+                                      style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF475569)),
+                                      maxLines: 3,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          );
+                        } else {
+                          return Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: isDark ? const Color(0xFF26151B) : const Color(0xFFFCE4EC),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: isDark ? const Color(0xFF3F1D27) : const Color(0xFFF48FB1)),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(Icons.beach_access_rounded, color: isDark ? const Color(0xFFFB7185) : const Color(0xFFB91C68), size: 22),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text('Leave Linked: ${l['title'] ?? l['leave_type']}',
+                                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: isDark ? const Color(0xFFFB7185) : const Color(0xFF880E4F))),
+                                      Text('${l['leave_type'] ?? 'Earned Leave'} • Status: $st',
+                                          style: TextStyle(fontSize: 11, color: isDark ? const Color(0xFFF43F5E) : const Color(0xFFAD1457), fontWeight: FontWeight.w500)),
+                                    ],
                                   ),
                                 ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: OutlinedButton.icon(
-                                  onPressed: () {
-                                    _showApplyLeaveModal(
-                                      context,
-                                      initialDate: dt,
-                                      initialToDate: dt,
-                                      initialType: 'Regularization',
-                                      initialTitle: 'Regularization (2 Hrs Early Concession)',
-                                      initialNote: 'Early departure concession requested for $headerDateStr.',
-                                      isDark: isDark,
-                                    );
-                                  },
-                                  icon: const Icon(Icons.edit_calendar_rounded, size: 14, color: Color(0xFF2563EB)),
-                                  label: const Text('Regularization', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11, color: Color(0xFF2563EB))),
-                                  style: OutlinedButton.styleFrom(
-                                    side: const BorderSide(color: Color(0xFF2563EB)),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
+                              ],
+                            ),
+                          );
+                        }
+                      },
                     ),
+                    const SizedBox(height: 12),
+                  ],
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF241C12) : const Color(0xFFFFFBEB),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: isDark ? const Color(0xFF3B2A18) : const Color(0xFFFDE68A)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Icon(Icons.warning_amber_rounded, color: isDark ? const Color(0xFFF5A952) : const Color(0xFFD97706), size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    detailIsFirstHalfLeave
+                                        ? 'Session 1 unrecorded ($hrsStr hrs worked). Apply a half-day leave or regularization.'
+                                        : 'Session 2 unrecorded ($hrsStr hrs worked). Apply a half-day leave or regularization.',
+                                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: isDark ? const Color(0xFFFBBF24) : const Color(0xFF92400E)),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    '💡 Regularization gives up to 2 hrs early leave concession with manager approval.',
+                                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: textSecondary),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () {
+                                  _showApplyLeaveModal(
+                                    context,
+                                    initialDate: dt,
+                                    initialToDate: dt,
+                                    initialFromSession: detailIsFirstHalfLeave ? 'Session 1' : 'Session 2',
+                                    initialToSession: detailIsFirstHalfLeave ? 'Session 1' : 'Session 2',
+                                    initialType: 'Earned Leave',
+                                    initialTitle: detailIsFirstHalfLeave ? 'Half Day Leave (Session 1)' : 'Half Day Leave (Session 2)',
+                                    initialNote: 'Half day taken on $headerDateStr.',
+                                    isDark: isDark,
+                                  );
+                                },
+                                icon: const Icon(Icons.beach_access_rounded, size: 14),
+                                label: const Text('Apply Half Day Leave', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11)),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: amberPrimary,
+                                  foregroundColor: amberDark,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+                                  elevation: 0,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () {
+                                  _showApplyLeaveModal(
+                                    context,
+                                    initialDate: dt,
+                                    initialToDate: dt,
+                                    initialFromSession: detailIsFirstHalfLeave ? 'Session 1' : 'Session 2',
+                                    initialToSession: detailIsFirstHalfLeave ? 'Session 1' : 'Session 2',
+                                    initialType: 'Regularization',
+                                    initialTitle: detailIsFirstHalfLeave ? 'Attendance Regularization (Session 1)' : 'Regularization (2 Hrs Early Concession)',
+                                    initialNote: detailIsFirstHalfLeave
+                                        ? 'Regularization requested for morning session on $headerDateStr.'
+                                        : 'Early departure concession requested for $headerDateStr.',
+                                    isDark: isDark,
+                                  );
+                                },
+                                icon: const Icon(Icons.edit_calendar_rounded, size: 14, color: Color(0xFF2563EB)),
+                                label: const Text('Regularization', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11, color: Color(0xFF2563EB))),
+                                style: OutlinedButton.styleFrom(
+                                  side: const BorderSide(color: Color(0xFF2563EB)),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
 
                 const SizedBox(height: 20),
