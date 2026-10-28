@@ -45,6 +45,7 @@ class ExploreTabState extends State<ExploreTab> {
   bool _loadingTeam = false;
   int _mainTabSegment = 0; // 0: My Leaves, 1: Team & Approvals
   String _teamSubFilter = 'All'; // 'All', 'Pending', 'Approved', 'Rejected'
+  String _teamLeaveDeptFilter = 'All'; // 'All' or specific department for leave requests
   String _teamAttendanceDeptFilter = 'All';
   String _teamAttendanceRoleFilter = 'All'; // 'All', 'Team Leader', 'Employee'
   Timer? _autoSyncTimer;
@@ -73,8 +74,9 @@ class ExploreTabState extends State<ExploreTab> {
   }
 
   bool get _isAdmin {
-    final r = (widget.user['role'] ?? '').toString().toLowerCase();
-    return r == 'admin';
+    final r = (widget.user['role'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
+    final cleanEid = (widget.user['employee_no'] ?? widget.user['emp_id'] ?? '').toString().trim().replaceFirst(RegExp(r'^0+'), '');
+    return r == 'admin' || r == 'superadmin' || ['965', '1844', '1951', '1009', '1228', '10001', '10003'].contains(cleanEid);
   }
 
   bool get _isPrivileged => _isManager || _isSeniorTeamLeader || _isTeamLeader || _isAdmin;
@@ -92,7 +94,7 @@ class ExploreTabState extends State<ExploreTab> {
     themeController.addListener(_onThemeChanged);
     _fetchLeaves(showLoading: true);
     _fetchHolidays();
-    if (widget.user['role'] == 'admin') {
+    if (_isAdmin) {
       _fetchAdminUsers(showLoading: true);
     }
     if (_isPrivileged) {
@@ -125,7 +127,7 @@ class ExploreTabState extends State<ExploreTab> {
       await Future.wait([
         _fetchLeaves(),
         _fetchHolidays(),
-        if (widget.user['role'] == 'admin') _fetchAdminUsers(),
+        if (_isAdmin) _fetchAdminUsers(),
         if (_isPrivileged) _fetchTeamData(),
       ]);
     } catch (_) {}
@@ -1608,13 +1610,13 @@ class ExploreTabState extends State<ExploreTab> {
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   Icon(
-                                    _isManager ? Icons.corporate_fare_rounded : Icons.groups_rounded,
+                                    (_isAdmin || _isManager) ? Icons.corporate_fare_rounded : Icons.groups_rounded,
                                     size: 16,
                                     color: _mainTabSegment == 1 ? amberDark : textSecondary,
                                   ),
                                   const SizedBox(width: 6),
                                   Text(
-                                    _isManager ? 'Team & Approvals' : 'Team Hub',
+                                    (_isAdmin || _isManager) ? 'Team & Approvals' : 'Team Hub',
                                     style: TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.w700,
@@ -2260,21 +2262,48 @@ class ExploreTabState extends State<ExploreTab> {
     final totalMembers = members.length;
     final presentMembers = members.where((m) => m['today_status'] == 'Clocked In' || m['today_status'] == 'Clocked Out').length;
 
-    // Extract unique departments from all members & departments list
+    // Extract unique departments from all leaves, members & departments list
     final Set<String> allDeptSet = {'All'};
+    final Set<String> leaveDeptSet = {'All'};
+
+    for (var l in _teamLeavesList) {
+      final d = l['department']?.toString().trim();
+      if (d != null && d.isNotEmpty) {
+        allDeptSet.add(d);
+        leaveDeptSet.add(d);
+      }
+    }
     for (var m in members) {
       final d = m['department']?.toString().trim();
       if (d != null && d.isNotEmpty) {
         allDeptSet.add(d);
+        leaveDeptSet.add(d);
       }
     }
     for (var d in departments) {
       final dName = (d is Map ? d['department'] ?? d['name'] : d)?.toString().trim();
       if (dName != null && dName.isNotEmpty) {
         allDeptSet.add(dName);
+        leaveDeptSet.add(dName);
       }
     }
-    final allDeptList = allDeptSet.toList();
+
+    final allDeptList = allDeptSet.toList()..sort((a, b) {
+      if (a == 'All') return -1;
+      if (b == 'All') return 1;
+      return a.toLowerCase().compareTo(b.toLowerCase());
+    });
+
+    final leaveDeptList = leaveDeptSet.toList()..sort((a, b) {
+      if (a == 'All') return -1;
+      if (b == 'All') return 1;
+      final aCount = _teamLeavesList.where((l) => (l['department'] ?? '').toString().trim().toLowerCase() == a.toLowerCase()).length;
+      final bCount = _teamLeavesList.where((l) => (l['department'] ?? '').toString().trim().toLowerCase() == b.toLowerCase()).length;
+      if (aCount > 0 && bCount == 0) return -1;
+      if (aCount == 0 && bCount > 0) return 1;
+      if (aCount != bCount) return bCount.compareTo(aCount);
+      return a.toLowerCase().compareTo(b.toLowerCase());
+    });
 
     // Filter members according to selected role and department
     final filteredMembers = members.where((m) {
@@ -2300,11 +2329,21 @@ class ExploreTabState extends State<ExploreTab> {
 
     final filteredTeamLeaves = _teamLeavesList.where((req) {
       final st = (req['status'] ?? '').toString().toLowerCase();
-      if (_teamSubFilter == 'All') return true;
-      if (_teamSubFilter == 'Pending') return st.contains('pending');
-      if (_teamSubFilter == 'Approved') return st.contains('approved');
-      if (_teamSubFilter == 'Rejected') return st.contains('rejected');
-      return false;
+      if (!_isAdmin) {
+        // Non-admin roles (TLs, managers, etc.) do not have filter chips and only see pending leaves requiring review/approval
+        return st.contains('pending');
+      }
+      if (_teamSubFilter == 'Pending' && !st.contains('pending')) return false;
+      if (_teamSubFilter == 'Approved' && !st.contains('approved')) return false;
+      if (_teamSubFilter == 'Rejected' && !st.contains('rejected')) return false;
+
+      // Department filter for Admin
+      if (_teamLeaveDeptFilter != 'All') {
+        final lDept = (req['department'] ?? '').toString().trim().toLowerCase();
+        if (lDept != _teamLeaveDeptFilter.toLowerCase()) return false;
+      }
+
+      return true;
     }).toList();
 
     return Column(
@@ -2336,12 +2375,12 @@ class ExploreTabState extends State<ExploreTab> {
                       Container(
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: (isMgr ? const Color(0xFF3F83F8) : amberPrimary).withAlpha(40),
+                          color: ((_isAdmin || isMgr) ? const Color(0xFF3F83F8) : amberPrimary).withAlpha(40),
                           shape: BoxShape.circle,
                         ),
                         child: Icon(
-                          isMgr ? Icons.corporate_fare_rounded : (_isSeniorTeamLeader ? Icons.military_tech_rounded : Icons.supervisor_account_rounded),
-                          color: isMgr ? const Color(0xFF2563EB) : amberDark,
+                          (_isAdmin || isMgr) ? Icons.corporate_fare_rounded : (_isSeniorTeamLeader ? Icons.military_tech_rounded : Icons.supervisor_account_rounded),
+                          color: (_isAdmin || isMgr) ? const Color(0xFF2563EB) : amberDark,
                           size: 24,
                         ),
                       ),
@@ -2387,8 +2426,8 @@ class ExploreTabState extends State<ExploreTab> {
                 children: [
                   Expanded(
                     child: _teamStatTile(
-                      isMgr ? '${teamLeaders.length} Leads' : '$totalMembers Members',
-                      isMgr ? 'Team Leaders' : 'Subordinates',
+                      (_isAdmin || isMgr) ? '${teamLeaders.length} Leads' : '$totalMembers Members',
+                      (_isAdmin || isMgr) ? 'Team Leaders' : 'Subordinates',
                       Icons.people_alt_rounded,
                       const Color(0xFF3F83F8),
                       isDark,
@@ -2447,13 +2486,17 @@ class ExploreTabState extends State<ExploreTab> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          isMgr ? 'Leave Requests Status' : 'Leave Request Approvals',
+                          _isAdmin ? 'Leave Request Approvals' : (isMgr ? 'Leave Requests Status' : 'Leave Request Approvals'),
                           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.3),
                         ),
                         Text(
-                          isMgr
-                              ? 'Monitor leave status across all departments'
-                              : 'Review pending leaves from employees in $deptName',
+                          _isAdmin
+                              ? (_teamLeaveDeptFilter != 'All'
+                                  ? 'Showing leave requests for $_teamLeaveDeptFilter'
+                                  : 'Review and manage leave requests across all departments')
+                              : (isMgr
+                                  ? 'Monitor leave status across all departments'
+                                  : 'Review pending leaves from employees in $deptName'),
                           style: TextStyle(fontSize: 11, color: textSecondary),
                         ),
                       ],
@@ -2467,7 +2510,9 @@ class ExploreTabState extends State<ExploreTab> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        isMgr ? '$pendingCount Pending' : '$pendingCount Action Needed',
+                        _isAdmin && _teamLeaveDeptFilter != 'All'
+                            ? '${filteredTeamLeaves.where((l) => (l['status'] ?? '').toString().toLowerCase().contains('pending')).length} Pending'
+                            : '$pendingCount Action Needed',
                         style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800),
                       ),
                     ),
@@ -2475,13 +2520,18 @@ class ExploreTabState extends State<ExploreTab> {
               ),
               const SizedBox(height: 14),
 
-              // Filter Chips (Only for Manager who monitors all statuses; TL only has pending requests)
-              if (isMgr) ...[
+              // Filter Chips (Only for Admin - user explicitly requested: "the filter of leave request approvals will only see to the admin not others")
+              if (_isAdmin) ...[
+                // 1. Status Filter Chips (All / Pending / Approved / Rejected)
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(
                     children: ['All', 'Pending', 'Approved', 'Rejected'].map((filter) {
                       final isSel = _teamSubFilter == filter;
+                      final sCount = filter == 'All'
+                          ? _teamLeavesList.length
+                          : _teamLeavesList.where((l) => (l['status'] ?? '').toString().toLowerCase().contains(filter.toLowerCase())).length;
+
                       return Padding(
                         padding: const EdgeInsets.only(right: 8),
                         child: GestureDetector(
@@ -2491,14 +2541,39 @@ class ExploreTabState extends State<ExploreTab> {
                             decoration: BoxDecoration(
                               color: isSel ? amberPrimary : (isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF0F4FD)),
                               borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Text(
-                              filter,
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700,
-                                color: isSel ? amberDark : textSecondary,
+                              border: Border.all(
+                                color: isSel ? amberDark.withAlpha(80) : borderCol,
+                                width: isSel ? 1.2 : 0.8,
                               ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  filter,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: isSel ? amberDark : textSecondary,
+                                  ),
+                                ),
+                                const SizedBox(width: 5),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: isSel ? amberDark.withAlpha(30) : (isDark ? Colors.white10 : Colors.black.withAlpha(10)),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    '$sCount',
+                                    style: TextStyle(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w800,
+                                      color: isSel ? amberDark : textSecondary,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -2506,7 +2581,86 @@ class ExploreTabState extends State<ExploreTab> {
                     }).toList(),
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 10),
+
+                // 2. Department Filter Chips (All / Field COE / IT / Railway Eng ...)
+                if (leaveDeptList.length > 1) ...[
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: leaveDeptList.map((dept) {
+                        final isSel = _teamLeaveDeptFilter.toLowerCase() == dept.toLowerCase();
+                        final dCount = dept == 'All'
+                            ? _teamLeavesList.length
+                            : _teamLeavesList.where((l) => (l['department'] ?? '').toString().trim().toLowerCase() == dept.toLowerCase()).length;
+                        final label = dept == 'All' ? '🏢 All Depts' : dept;
+
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: GestureDetector(
+                            onTap: () => setState(() => _teamLeaveDeptFilter = dept),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 150),
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: isSel
+                                    ? (isDark ? const Color(0xFF1E293B) : const Color(0xFFE0F2FE))
+                                    : (isDark ? const Color(0xFF141824) : const Color(0xFFF1F5F9)),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: isSel ? const Color(0xFF0284C7) : borderCol,
+                                  width: isSel ? 1.2 : 0.8,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    dept == 'All' ? Icons.domain_rounded : Icons.business_rounded,
+                                    size: 12,
+                                    color: isSel ? const Color(0xFF0284C7) : textSecondary,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    label,
+                                    style: TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: isSel ? FontWeight.w800 : FontWeight.w600,
+                                      color: isSel ? (isDark ? Colors.white : const Color(0xFF0284C7)) : textSecondary,
+                                    ),
+                                  ),
+                                  if (dCount > 0) ...[
+                                    const SizedBox(width: 4),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 1),
+                                      decoration: BoxDecoration(
+                                        color: isSel
+                                            ? const Color(0xFF0284C7).withAlpha(35)
+                                            : (isDark ? Colors.white10 : Colors.black.withAlpha(10)),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        '$dCount',
+                                        style: TextStyle(
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.w800,
+                                          color: isSel ? (isDark ? Colors.white : const Color(0xFF0284C7)) : textSecondary,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ] else ...[
+                  const SizedBox(height: 14),
+                ],
               ],
 
               if (filteredTeamLeaves.isEmpty)
@@ -2522,15 +2676,18 @@ class ExploreTabState extends State<ExploreTab> {
                       Icon(Icons.done_all_rounded, size: 36, color: const Color(0xFF10B981).withAlpha(160)),
                       const SizedBox(height: 8),
                       Text(
-                        isMgr ? 'No Leave Records' : 'All Caught Up!',
+                        _isAdmin ? 'No Leave Records' : 'All Caught Up!',
                         style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary),
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        isMgr
-                            ? 'There are no leave requests matching this filter.'
+                        _isAdmin
+                            ? (_teamLeaveDeptFilter != 'All'
+                                ? 'No leave requests matching department "$_teamLeaveDeptFilter" in "$_teamSubFilter" status.'
+                                : 'There are no leave requests matching this filter.')
                             : 'No pending leave requests requiring your review.',
                         style: TextStyle(fontSize: 11, color: textSecondary),
+                        textAlign: TextAlign.center,
                       ),
                     ],
                   ),
@@ -2687,7 +2844,7 @@ class ExploreTabState extends State<ExploreTab> {
         ),
 
         // ── SECTION 3: Department Summary (for Manager / Admin) ──────────────
-        if (isMgr && departments.isNotEmpty) ...[
+        if ((_isAdmin || isMgr) && departments.isNotEmpty) ...[
           const SizedBox(height: 20),
           Container(
             padding: const EdgeInsets.all(20),
@@ -2878,9 +3035,11 @@ class ExploreTabState extends State<ExploreTab> {
           // ── Applicant & Status Header ────────────────────────────────────────
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     CircleAvatar(
                       radius: 18,
@@ -2898,15 +3057,17 @@ class ExploreTabState extends State<ExploreTab> {
                           Text(
                             applicantName,
                             style: TextStyle(color: textPrimary, fontWeight: FontWeight.w800, fontSize: 14),
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 1,
+                            softWrap: true,
+                            maxLines: 3,
+                            overflow: TextOverflow.visible,
                           ),
-                          const SizedBox(height: 1),
+                          const SizedBox(height: 2),
                           Text(
                             '$applicantRole • $dept',
                             style: TextStyle(color: textSecondary, fontSize: 11, fontWeight: FontWeight.w500),
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 1,
+                            softWrap: true,
+                            maxLines: 2,
+                            overflow: TextOverflow.visible,
                           ),
                         ],
                       ),
@@ -2916,7 +3077,7 @@ class ExploreTabState extends State<ExploreTab> {
               ),
               const SizedBox(width: 8),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
                   color: isPending
                       ? (isDark ? const Color(0xFF261D12) : const Color(0xFFFEF3C7))
