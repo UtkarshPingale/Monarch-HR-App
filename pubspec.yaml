@@ -1,8 +1,8 @@
 name: worktrack
 description: Employee Attendance Tracker with GPS
 
-version: 1.0.6+15 #andriod
-#version: 1.0.5+16 #apple
+# version: 1.0.6+15 #andriod
+version: 1.0.5+17 #apple
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
