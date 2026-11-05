@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../config/api_config.dart';
@@ -50,6 +51,11 @@ class ExploreTabState extends State<ExploreTab> {
   String _teamAttendanceRoleFilter = 'All'; // 'All', 'Team Leader', 'Employee'
   Timer? _autoSyncTimer;
   double _leavesDragDeltaX = 0;
+  int _pendingCarouselIndex = 0;
+  final PageController _pendingCarouselCtrl = PageController(viewportFraction: 0.94);
+  final TextEditingController _attendanceSearchCtrl = TextEditingController();
+  String _attendanceSearchQuery = '';
+  bool _expandAllPunches = false;
 
   String get _combinedRoleStr {
     final r = (widget.user['role'] ?? '').toString();
@@ -118,6 +124,8 @@ class ExploreTabState extends State<ExploreTab> {
     _holidayDayCtrl.dispose();
     _leaveTitleCtrl.dispose();
     _leaveNoteCtrl.dispose();
+    _pendingCarouselCtrl.dispose();
+    _attendanceSearchCtrl.dispose();
     _autoSyncTimer?.cancel();
     super.dispose();
   }
@@ -219,10 +227,19 @@ class ExploreTabState extends State<ExploreTab> {
       if (res['error'] != null) {
         messenger.showSnackBar(SnackBar(content: Text('Error: ${res['error']}')));
       } else {
+        String msg = '✅ Leave approved successfully!';
+        Color bg = const Color(0xFF16A34A);
+        if (action == 'cancel' || action == 'remove' || action == 'revoke') {
+          msg = '✅ Approved leave cancelled and quota restored!';
+          bg = const Color(0xFFEA580C);
+        } else if (action == 'reject') {
+          msg = '❌ Leave rejected.';
+          bg = const Color(0xFFDC2626);
+        }
         messenger.showSnackBar(
           SnackBar(
-            content: Text(action == 'approve' ? '✅ Leave approved successfully!' : '❌ Leave rejected.'),
-            backgroundColor: action == 'approve' ? const Color(0xFF16A34A) : const Color(0xFFDC2626),
+            content: Text(msg),
+            backgroundColor: bg,
           ),
         );
         _fetchTeamData();
@@ -2294,16 +2311,7 @@ class ExploreTabState extends State<ExploreTab> {
       return a.toLowerCase().compareTo(b.toLowerCase());
     });
 
-    final leaveDeptList = leaveDeptSet.toList()..sort((a, b) {
-      if (a == 'All') return -1;
-      if (b == 'All') return 1;
-      final aCount = _teamLeavesList.where((l) => (l['department'] ?? '').toString().trim().toLowerCase() == a.toLowerCase()).length;
-      final bCount = _teamLeavesList.where((l) => (l['department'] ?? '').toString().trim().toLowerCase() == b.toLowerCase()).length;
-      if (aCount > 0 && bCount == 0) return -1;
-      if (aCount == 0 && bCount > 0) return 1;
-      if (aCount != bCount) return bCount.compareTo(aCount);
-      return a.toLowerCase().compareTo(b.toLowerCase());
-    });
+// leaveDeptSet extracted for departments list
 
     // Filter members according to selected role and department
     final filteredMembers = members.where((m) {
@@ -2311,10 +2319,14 @@ class ExploreTabState extends State<ExploreTab> {
       final isSrTL = (role.contains('senior') || role.contains('sr') || role.contains('sinor') || role.contains('snr')) &&
           (role.contains('lead') || role.contains('tl') || role.contains('head') || role.contains('leader') || role.contains('manager'));
       final isTL = !isSrTL && (role.contains('teamleader') || role.contains('subteamlead') || role.contains('lead') || role.contains('tl') || role.contains('head') || role.contains('leader'));
-      final isEmp = role == 'employee' || (!isTL && !isSrTL && role != 'manager' && role != 'admin' && role != 'projectmanager');
+      final isAdm = role == 'admin' || role == 'superadmin';
+      final isMgr = !isAdm && (role == 'manager' || role.contains('manager') || role == 'projectmanager');
+      final isEmp = role == 'employee' || (!isTL && !isSrTL && !isAdm && !isMgr);
 
       // 1. Role filter
       if (_teamAttendanceRoleFilter == 'Senior Team Leader' && !isSrTL) return false;
+      if (_teamAttendanceRoleFilter == 'Admin' && !isAdm) return false;
+      if (_teamAttendanceRoleFilter == 'Manager' && !isMgr) return false;
       if (_teamAttendanceRoleFilter == 'Team Leader' && !isTL) return false;
       if (_teamAttendanceRoleFilter == 'Employee' && !isEmp) return false;
 
@@ -2345,6 +2357,63 @@ class ExploreTabState extends State<ExploreTab> {
 
       return true;
     }).toList();
+
+    // All pending approvals across team leaves
+    final allPendingTeamLeaves = _teamLeavesList.where((req) {
+      final st = (req['status'] ?? '').toString().toLowerCase();
+      return st.contains('pending');
+    }).toList();
+
+    // Filtered pending leaves for the swipe carousel based on department
+    final pendingTeamLeaves = allPendingTeamLeaves.where((req) {
+      if (_teamLeaveDeptFilter != 'All') {
+        final lDept = (req['department'] ?? '').toString().trim().toLowerCase();
+        if (lDept != _teamLeaveDeptFilter.toLowerCase()) return false;
+      }
+      return true;
+    }).toList();
+
+    // Department counts specifically for pending requests
+    final Map<String, int> pendingDeptCounts = {};
+    for (var l in allPendingTeamLeaves) {
+      final d = (l['department'] ?? 'General').toString().trim();
+      if (d.isNotEmpty) {
+        pendingDeptCounts[d] = (pendingDeptCounts[d] ?? 0) + 1;
+      }
+    }
+    final pendingDeptsList = ['All', ...pendingDeptCounts.keys.toList()..sort()];
+
+    // Search-filtered team members for Live Attendance & Punches
+    final searchFilteredMembers = filteredMembers.where((m) {
+      if (_attendanceSearchQuery.isEmpty) return true;
+      final q = _attendanceSearchQuery.toLowerCase();
+      final name = (m['name'] ?? m['full_name'] ?? '').toString().toLowerCase();
+      final empId = (m['employee_no'] ?? m['emp_id'] ?? m['id'] ?? '').toString().toLowerCase();
+      final dept = (m['department'] ?? '').toString().toLowerCase();
+      return name.contains(q) || empId.contains(q) || dept.contains(q);
+    }).toList();
+
+    // Role counts for Attendance role chips
+    int srTLCount = 0;
+    int adminRoleCount = 0;
+    int mgrCount = 0;
+    int tlCount = 0;
+    int empCount = 0;
+    for (var m in members) {
+      final role = (m['role'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
+      final isSrTL = (role.contains('senior') || role.contains('sr') || role.contains('sinor') || role.contains('snr')) &&
+          (role.contains('lead') || role.contains('tl') || role.contains('head') || role.contains('leader') || role.contains('manager'));
+      final isTL = !isSrTL && (role.contains('teamleader') || role.contains('subteamlead') || role.contains('lead') || role.contains('tl') || role.contains('head') || role.contains('leader'));
+      final isAdm = role == 'admin' || role == 'superadmin';
+      final isMgr = !isAdm && (role == 'manager' || role.contains('manager') || role == 'projectmanager');
+      final isEmp = role == 'employee' || (!isTL && !isSrTL && !isAdm && !isMgr);
+
+      if (isSrTL) srTLCount++;
+      if (isAdm) adminRoleCount++;
+      if (isMgr) mgrCount++;
+      if (isTL) tlCount++;
+      if (isEmp) empCount++;
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2467,9 +2536,9 @@ class ExploreTabState extends State<ExploreTab> {
 
         const SizedBox(height: 20),
 
-        // ── SECTION 1: Subordinate Leave Approvals / Status Oversight ──────────
+        // ── SECTION 1: Subordinate Leave Approvals / Carousel Deck ───────────
         Container(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.only(top: 18, bottom: 16),
           decoration: BoxDecoration(
             color: bgCard,
             borderRadius: BorderRadius.circular(24),
@@ -2478,178 +2547,119 @@ class ExploreTabState extends State<ExploreTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+              // Header Row: Title, Action Needed Badge, "View All (63) →"
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
                       children: [
                         Text(
-                          _isAdmin ? 'Leave Request Approvals' : (isMgr ? 'Leave Requests Status' : 'Leave Request Approvals'),
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.3),
-                        ),
-                        Text(
-                          _isAdmin
-                              ? (_teamLeaveDeptFilter != 'All'
-                                  ? 'Showing leave requests for $_teamLeaveDeptFilter'
-                                  : 'Review and manage leave requests across all departments')
-                              : (isMgr
-                                  ? 'Monitor leave status across all departments'
-                                  : 'Review pending leaves from employees in $deptName'),
-                          style: TextStyle(fontSize: 11, color: textSecondary),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (pendingCount > 0)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFF2A55),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        _isAdmin && _teamLeaveDeptFilter != 'All'
-                            ? '${filteredTeamLeaves.where((l) => (l['status'] ?? '').toString().toLowerCase().contains('pending')).length} Pending'
-                            : '$pendingCount Action Needed',
-                        style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 14),
-
-              // Filter Chips (Only for Admin - user explicitly requested: "the filter of leave request approvals will only see to the admin not others")
-              if (_isAdmin) ...[
-                // 1. Status Filter Chips (All / Pending / Approved / Rejected)
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: ['All', 'Pending', 'Approved', 'Rejected'].map((filter) {
-                      final isSel = _teamSubFilter == filter;
-                      final sCount = filter == 'All'
-                          ? _teamLeavesList.length
-                          : _teamLeavesList.where((l) => (l['status'] ?? '').toString().toLowerCase().contains(filter.toLowerCase())).length;
-
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: GestureDetector(
-                          onTap: () => setState(() => _teamSubFilter = filter),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: isSel ? amberPrimary : (isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF0F4FD)),
-                              borderRadius: BorderRadius.circular(14),
-                              border: Border.all(
-                                color: isSel ? amberDark.withAlpha(80) : borderCol,
-                                width: isSel ? 1.2 : 0.8,
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  filter,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: isSel ? amberDark : textSecondary,
-                                  ),
-                                ),
-                                const SizedBox(width: 5),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                                  decoration: BoxDecoration(
-                                    color: isSel ? amberDark.withAlpha(30) : (isDark ? Colors.white10 : Colors.black.withAlpha(10)),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    '$sCount',
-                                    style: TextStyle(
-                                      fontSize: 9.5,
-                                      fontWeight: FontWeight.w800,
-                                      color: isSel ? amberDark : textSecondary,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
+                          'Pending Approvals',
+                          style: TextStyle(
+                            fontSize: 16.5,
+                            fontWeight: FontWeight.w800,
+                            color: textPrimary,
+                            letterSpacing: -0.3,
                           ),
                         ),
-                      );
-                    }).toList(),
-                  ),
+                        const SizedBox(width: 8),
+                        if (allPendingTeamLeaves.isNotEmpty)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFDBA74).withAlpha(isDark ? 40 : 180),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              '${allPendingTeamLeaves.length} Action Needed',
+                              style: const TextStyle(
+                                color: Color(0xFF9A3412),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    GestureDetector(
+                      onTap: () => _showAllApprovalsSheet(
+                        context,
+                        filteredTeamLeaves,
+                        isDark,
+                        bgCard,
+                        borderCol,
+                        textPrimary,
+                        textSecondary,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            'View All (${allPendingTeamLeaves.length})',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                              color: textSecondary,
+                            ),
+                          ),
+                          const SizedBox(width: 3),
+                          Icon(Icons.arrow_forward_rounded, size: 13, color: textSecondary),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 10),
+              ),
+              const SizedBox(height: 12),
 
-                // 2. Department Filter Chips (All / Field COE / IT / Railway Eng ...)
-                if (leaveDeptList.length > 1) ...[
-                  SingleChildScrollView(
+              // Horizontal Department Filter Chips
+              if (pendingDeptsList.length > 1) ...[
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Row(
-                      children: leaveDeptList.map((dept) {
+                      children: pendingDeptsList.map((dept) {
                         final isSel = _teamLeaveDeptFilter.toLowerCase() == dept.toLowerCase();
-                        final dCount = dept == 'All'
-                            ? _teamLeavesList.length
-                            : _teamLeavesList.where((l) => (l['department'] ?? '').toString().trim().toLowerCase() == dept.toLowerCase()).length;
-                        final label = dept == 'All' ? '🏢 All Depts' : dept;
+                        final dCount = dept == 'All' ? allPendingTeamLeaves.length : (pendingDeptCounts[dept] ?? 0);
+                        final label = dept == 'All' ? 'All ($dCount)' : '$dept ($dCount)';
 
                         return Padding(
-                          padding: const EdgeInsets.only(right: 6),
+                          padding: const EdgeInsets.only(right: 8),
                           child: GestureDetector(
-                            onTap: () => setState(() => _teamLeaveDeptFilter = dept),
+                            onTap: () {
+                              setState(() {
+                                _teamLeaveDeptFilter = dept;
+                                _pendingCarouselIndex = 0;
+                              });
+                              if (_pendingCarouselCtrl.hasClients) {
+                                _pendingCarouselCtrl.jumpToPage(0);
+                              }
+                            },
                             child: AnimatedContainer(
                               duration: const Duration(milliseconds: 150),
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
                               decoration: BoxDecoration(
                                 color: isSel
-                                    ? (isDark ? const Color(0xFF1E293B) : const Color(0xFFE0F2FE))
-                                    : (isDark ? const Color(0xFF141824) : const Color(0xFFF1F5F9)),
-                                borderRadius: BorderRadius.circular(12),
+                                    ? (isDark ? const Color(0xFFF59E0B) : const Color(0xFF6B2D05))
+                                    : (isDark ? const Color(0xFF1E2638) : const Color(0xFFF1F5F9)),
+                                borderRadius: BorderRadius.circular(20),
                                 border: Border.all(
-                                  color: isSel ? const Color(0xFF0284C7) : borderCol,
-                                  width: isSel ? 1.2 : 0.8,
+                                  color: isSel
+                                      ? (isDark ? const Color(0xFFF59E0B) : const Color(0xFF6B2D05))
+                                      : (isDark ? const Color(0xFF2B354C) : const Color(0xFFE2E8F0)),
+                                  width: 1.0,
                                 ),
                               ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    dept == 'All' ? Icons.domain_rounded : Icons.business_rounded,
-                                    size: 12,
-                                    color: isSel ? const Color(0xFF0284C7) : textSecondary,
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    label,
-                                    style: TextStyle(
-                                      fontSize: 10.5,
-                                      fontWeight: isSel ? FontWeight.w800 : FontWeight.w600,
-                                      color: isSel ? (isDark ? Colors.white : const Color(0xFF0284C7)) : textSecondary,
-                                    ),
-                                  ),
-                                  if (dCount > 0) ...[
-                                    const SizedBox(width: 4),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 1),
-                                      decoration: BoxDecoration(
-                                        color: isSel
-                                            ? const Color(0xFF0284C7).withAlpha(35)
-                                            : (isDark ? Colors.white10 : Colors.black.withAlpha(10)),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Text(
-                                        '$dCount',
-                                        style: TextStyle(
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w800,
-                                          color: isSel ? (isDark ? Colors.white : const Color(0xFF0284C7)) : textSecondary,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ],
+                              child: Text(
+                                label,
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: isSel ? FontWeight.w800 : FontWeight.w600,
+                                  color: isSel ? Colors.white : (isDark ? Colors.white70 : const Color(0xFF334155)),
+                                ),
                               ),
                             ),
                           ),
@@ -2657,58 +2667,120 @@ class ExploreTabState extends State<ExploreTab> {
                       }).toList(),
                     ),
                   ),
-                  const SizedBox(height: 14),
-                ] else ...[
-                  const SizedBox(height: 14),
-                ],
+                ),
+                const SizedBox(height: 14),
               ],
 
-              if (filteredTeamLeaves.isEmpty)
+              // Horizontal Swipe Carousel Deck (Generous Height for Big Prominent Card)
+              if (pendingTeamLeaves.isEmpty)
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(24),
+                  margin: const EdgeInsets.symmetric(horizontal: 16),
+                  padding: const EdgeInsets.all(22),
                   decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF9FAFB),
-                    borderRadius: BorderRadius.circular(16),
+                    color: isDark ? const Color(0xFF141924) : const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: borderCol),
                   ),
                   child: Column(
                     children: [
-                      Icon(Icons.done_all_rounded, size: 36, color: const Color(0xFF10B981).withAlpha(160)),
-                      const SizedBox(height: 8),
+                      const Icon(Icons.done_all_rounded, size: 32, color: Color(0xFF10B981)),
+                      const SizedBox(height: 6),
                       Text(
-                        _isAdmin ? 'No Leave Records' : 'All Caught Up!',
-                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary),
+                        'Zero Pending Approvals',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: textPrimary),
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        _isAdmin
-                            ? (_teamLeaveDeptFilter != 'All'
-                                ? 'No leave requests matching department "$_teamLeaveDeptFilter" in "$_teamSubFilter" status.'
-                                : 'There are no leave requests matching this filter.')
-                            : 'No pending leave requests requiring your review.',
+                        'All team leave requests are up to date.',
                         style: TextStyle(fontSize: 11, color: textSecondary),
-                        textAlign: TextAlign.center,
                       ),
                     ],
                   ),
                 )
-              else
-                ...filteredTeamLeaves.map((leave) => _buildTeamLeaveCard(
-                      leave,
-                      isDark,
-                      bgCard,
-                      borderCol,
-                      textPrimary,
-                      textSecondary,
-                      canAction: true,
-                    )),
+              else ...[
+                SizedBox(
+                  height: 288,
+                  child: PageView.builder(
+                    controller: _pendingCarouselCtrl,
+                    itemCount: pendingTeamLeaves.length,
+                    onPageChanged: (i) => setState(() => _pendingCarouselIndex = i),
+                    itemBuilder: (context, idx) {
+                      final leave = pendingTeamLeaves[idx];
+                      return _buildSwipeApprovalCard(
+                        leave,
+                        idx,
+                        pendingTeamLeaves.length,
+                        isDark,
+                        bgCard,
+                        borderCol,
+                        textPrimary,
+                        textSecondary,
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Footer row below carousel: Dots on left, Triage hint on right
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          ...List.generate(min(3, pendingTeamLeaves.length), (dotIdx) {
+                            final isCurrent = dotIdx == min(_pendingCarouselIndex, 2);
+                            return AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              margin: const EdgeInsets.symmetric(horizontal: 2.5),
+                              width: isCurrent ? 22 : 5.5,
+                              height: 5,
+                              decoration: BoxDecoration(
+                                color: isCurrent
+                                    ? (isDark ? const Color(0xFFF59E0B) : const Color(0xFF6B2D05))
+                                    : (isDark ? Colors.white24 : const Color(0xFFCBD5E1)),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                            );
+                          }),
+                          if (pendingTeamLeaves.length > 3) ...[
+                            const SizedBox(width: 6),
+                            Text(
+                              '+${pendingTeamLeaves.length - min(_pendingCarouselIndex + 1, pendingTeamLeaves.length)} more',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                color: isDark ? Colors.white60 : const Color(0xFF64748B),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.swipe_rounded, size: 13, color: isDark ? Colors.white38 : const Color(0xFF94A3B8)),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Swipe cards to review',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                              color: isDark ? Colors.white38 : const Color(0xFF94A3B8),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ],
           ),
         ),
 
-        const SizedBox(height: 20),
-
-        // ── SECTION 2: Team Punch In & Out Live Monitor ──────────────────────
+        // ── SECTION 2: Team Attendance & Punches (Brought Above the Fold) ─────
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
@@ -2719,6 +2791,7 @@ class ExploreTabState extends State<ExploreTab> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Header
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -2726,47 +2799,65 @@ class ExploreTabState extends State<ExploreTab> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Team Attendance & Punches',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary, letterSpacing: -0.3)),
-                        Text('Live punch in/out status for today (${DateFormat('d MMM yyyy').format(DateTime.now())})',
-                            style: TextStyle(fontSize: 11, color: textSecondary)),
+                        Text(
+                          'Team Attendance & Punches',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: textPrimary,
+                            letterSpacing: -0.3,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '• Live Feed • ${DateFormat('d MMM yyyy').format(DateTime.now())} • ${members.length} Total Roster',
+                          style: TextStyle(fontSize: 11, color: textSecondary),
+                        ),
                       ],
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: amberPrimary.withAlpha(40),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      '${filteredMembers.length} of ${members.length}',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: amberDark),
-                    ),
+                  IconButton(
+                    icon: const Icon(Icons.refresh_rounded, size: 19),
+                    color: const Color(0xFF3F83F8),
+                    onPressed: _fetchTeamData,
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
 
-              // ── Filter 1: Role Selector (All / Sr Team Leader / Team Leader / Employee) ─────
+              // Filter 1: Role Selector Chips
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
-                    _roleFilterChip('All', '👥 All Roles (${members.length})', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
-                    const SizedBox(width: 8),
-                    _roleFilterChip('Senior Team Leader', '🎖️ Sr Team Leaders', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
-                    const SizedBox(width: 8),
-                    _roleFilterChip('Team Leader', '👔 Team Leaders', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
-                    const SizedBox(width: 8),
-                    _roleFilterChip('Employee', '👤 Employees', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
+                    _roleFilterChip('All', 'All Roles (${members.length})', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
+                    if (srTLCount > 0) ...[
+                      const SizedBox(width: 8),
+                      _roleFilterChip('Senior Team Leader', 'Sr Team Leaders ($srTLCount)', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
+                    ],
+                    if (adminRoleCount > 0) ...[
+                      const SizedBox(width: 8),
+                      _roleFilterChip('Admin', 'Admin ($adminRoleCount)', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
+                    ],
+                    if (mgrCount > 0) ...[
+                      const SizedBox(width: 8),
+                      _roleFilterChip('Manager', 'Managers ($mgrCount)', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
+                    ],
+                    if (tlCount > 0) ...[
+                      const SizedBox(width: 8),
+                      _roleFilterChip('Team Leader', 'Team Leaders ($tlCount)', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
+                    ],
+                    if (empCount > 0) ...[
+                      const SizedBox(width: 8),
+                      _roleFilterChip('Employee', 'Employees ($empCount)', isDark, bgCard, borderCol, textPrimary, textSecondary, amberPrimary, amberDark),
+                    ],
                   ],
                 ),
               ),
 
               const SizedBox(height: 10),
 
-              // ── Filter 2: Department Selector (All / Dept 1 / Dept 2 ...) ──
+              // Filter 2: Department Selector (if > 1)
               if (allDeptList.length > 1) ...[
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
@@ -2793,16 +2884,12 @@ class ExploreTabState extends State<ExploreTab> {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(
-                                  Icons.business_rounded,
-                                  size: 13,
-                                  color: isSel ? const Color(0xFF0284C7) : textSecondary,
-                                ),
+                                Icon(Icons.business_rounded, size: 12, color: isSel ? const Color(0xFF0284C7) : textSecondary),
                                 const SizedBox(width: 4),
                                 Text(
                                   dept,
                                   style: TextStyle(
-                                    fontSize: 11,
+                                    fontSize: 10.5,
                                     fontWeight: isSel ? FontWeight.w800 : FontWeight.w500,
                                     color: isSel ? (isDark ? Colors.white : const Color(0xFF0284C7)) : textSecondary,
                                   ),
@@ -2815,30 +2902,110 @@ class ExploreTabState extends State<ExploreTab> {
                     }).toList(),
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 12),
               ],
 
-              // Members List
-              if (filteredMembers.isEmpty)
+              // Quick Search Input
+              Container(
+                height: 42,
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF141924) : const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: borderCol),
+                ),
+                child: TextField(
+                  controller: _attendanceSearchCtrl,
+                  style: TextStyle(color: textPrimary, fontSize: 12.5),
+                  decoration: InputDecoration(
+                    hintText: 'Quick search members or ID...',
+                    hintStyle: TextStyle(color: textSecondary.withAlpha(140), fontSize: 11.5),
+                    prefixIcon: Icon(Icons.search_rounded, size: 18, color: textSecondary),
+                    suffixIcon: _attendanceSearchQuery.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.close_rounded, size: 16),
+                            color: textSecondary,
+                            onPressed: () {
+                              _attendanceSearchCtrl.clear();
+                              setState(() => _attendanceSearchQuery = '');
+                            },
+                          )
+                        : null,
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  ),
+                  onChanged: (val) => setState(() => _attendanceSearchQuery = val.trim()),
+                ),
+              ),
+
+              const SizedBox(height: 14),
+
+              // Roster Items List
+              if (searchFilteredMembers.isEmpty)
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(24),
+                  padding: const EdgeInsets.all(20),
                   decoration: BoxDecoration(
                     color: isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF9FAFB),
                     borderRadius: BorderRadius.circular(16),
                   ),
                   child: Column(
                     children: [
-                      Icon(Icons.person_off_rounded, size: 36, color: textSecondary.withAlpha(120)),
-                      const SizedBox(height: 8),
+                      Icon(Icons.person_off_rounded, size: 32, color: textSecondary.withAlpha(120)),
+                      const SizedBox(height: 6),
                       Text('No Members Found', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textPrimary)),
                       const SizedBox(height: 2),
-                      Text('No team members match the selected filter.', style: TextStyle(fontSize: 11, color: textSecondary)),
+                      Text('No team members match this search or filter.', style: TextStyle(fontSize: 11, color: textSecondary)),
                     ],
                   ),
                 )
-              else
-                ...filteredMembers.map((m) => _buildMemberPunchTile(m, isDark, bgCard, borderCol, textPrimary, textSecondary)),
+              else ...[
+                // Show top 5 members by default, or all if expanded
+                ...(_expandAllPunches ? searchFilteredMembers : searchFilteredMembers.take(5))
+                    .map((m) => _buildMemberPunchTile(m, isDark, bgCard, borderCol, textPrimary, textSecondary)),
+
+                // "View Live Punch Board" Button
+                const SizedBox(height: 6),
+                InkWell(
+                  onTap: () {
+                    _showLivePunchBoardSheet(
+                      context,
+                      members,
+                      isDark,
+                      bgCard,
+                      borderCol,
+                      textPrimary,
+                      textSecondary,
+                    );
+                  },
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF1E2638) : const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: borderCol),
+                    ),
+                    alignment: Alignment.center,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          'View Live Punch Board',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w700,
+                            color: textPrimary,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        Icon(Icons.arrow_forward_rounded, size: 14, color: textPrimary),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+
             ],
           ),
         ),
@@ -3350,6 +3517,92 @@ class ExploreTabState extends State<ExploreTab> {
                 ),
               ],
             ),
+          ] else if (canAction && isApproved) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  final reasonCtrl = TextEditingController();
+                  final dialogBg = isDark ? const Color(0xFF131722) : Colors.white;
+                  showDialog(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      backgroundColor: dialogBg,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        side: BorderSide(color: borderCol),
+                      ),
+                      title: Row(
+                        children: [
+                          const Icon(Icons.remove_circle_outline_rounded, color: Color(0xFFDC2626), size: 22),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Cancel Approved Leave',
+                              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: textPrimary),
+                            ),
+                          ),
+                        ],
+                      ),
+                      content: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Are you sure you want to cancel and remove this approved leave for $applicantName ($formattedDateStr)?\n\nThis will cancel the leave and restore the employee\'s leave quota balance.',
+                            style: TextStyle(fontSize: 13, height: 1.4, color: textSecondary),
+                          ),
+                          const SizedBox(height: 14),
+                          TextField(
+                            controller: reasonCtrl,
+                            style: TextStyle(color: textPrimary, fontSize: 13),
+                            decoration: InputDecoration(
+                              labelText: 'Cancellation Reason (Optional)',
+                              hintText: 'e.g. Employee reported to work / requested cancellation',
+                              hintStyle: TextStyle(color: textSecondary.withAlpha(120), fontSize: 12),
+                              labelStyle: TextStyle(color: textSecondary),
+                              filled: true,
+                              fillColor: isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF0F4FD),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: borderCol)),
+                            ),
+                          ),
+                        ],
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: Text('Keep Leave', style: TextStyle(color: textSecondary, fontWeight: FontWeight.w600)),
+                        ),
+                        ElevatedButton(
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            _actionTeamLeave(leaveId, 'cancel', note: reasonCtrl.text.trim());
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFDC2626),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          child: const Text('Cancel Leave & Restore Balance', style: TextStyle(fontWeight: FontWeight.w700)),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.remove_circle_outline_rounded, size: 16, color: Color(0xFFDC2626)),
+                label: const Text(
+                  'Cancel & Remove Approved Leave',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5, color: Color(0xFFDC2626)),
+                ),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFFDC2626), width: 1.2),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  backgroundColor: const Color(0xFFDC2626).withAlpha(isDark ? 25 : 12),
+                ),
+              ),
+            ),
           ],
         ],
       ),
@@ -3357,83 +3610,965 @@ class ExploreTabState extends State<ExploreTab> {
   }
 
   Widget _buildMemberPunchTile(Map<String, dynamic> member, bool isDark, Color bgCard, Color borderCol, Color textPrimary, Color textSecondary) {
-    final name = member['name'] ?? member['full_name'] ?? 'Member';
-    final role = member['role'] ?? 'Employee';
-    final dept = member['department'] ?? 'General';
-    final todayStatus = member['today_status'] ?? 'Not Clocked In';
-    final signIn = member['sign_in'];
-    final signOut = member['sign_out'];
+    final name = (member['name'] ?? member['full_name'] ?? 'Member').toString().trim();
+    final role = (member['role'] ?? 'Employee').toString().trim();
+    final dept = (member['department'] ?? 'General').toString().trim();
+    final todayStatus = (member['today_status'] ?? 'Not Clocked In').toString();
+    final signIn = member['sign_in']?.toString();
+    final signOut = member['sign_out']?.toString();
 
-    Color statusColor = textSecondary;
-    Color statusBg = isDark ? const Color(0xFF1E2433) : const Color(0xFFF3F4F6);
-    if (todayStatus == 'Clocked In') {
-      statusColor = isDark ? const Color(0xFF34D399) : const Color(0xFF10B981);
-      statusBg = isDark ? const Color(0xFF132A20) : const Color(0xFFD1FAE5);
-    } else if (todayStatus == 'Clocked Out') {
-      statusColor = isDark ? const Color(0xFF38BDF8) : const Color(0xFF3B82F6);
-      statusBg = isDark ? const Color(0xFF132235) : const Color(0xFFDBEAFE);
-    }
+    final isClockedIn = todayStatus == 'Clocked In' || (signIn != null && signOut == null);
+    final isClockedOut = todayStatus == 'Clocked Out' || (signIn != null && signOut != null);
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: borderCol),
-      ),
-      child: Row(
+    // Initials: e.g. "AV"
+    final parts = name.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    final initials = parts.isNotEmpty
+        ? (parts.length > 1 ? '${parts[0][0]}${parts[1][0]}'.toUpperCase() : parts[0][0].toUpperCase())
+        : 'M';
+
+    Color avatarBg;
+    Color avatarText;
+    Color badgeBg;
+    Color badgeText;
+    Widget statusWidget;
+
+    if (isClockedIn) {
+      avatarBg = isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7);
+      avatarText = isDark ? const Color(0xFF34D399) : const Color(0xFF15803D);
+      badgeBg = isDark ? const Color(0xFF132A20) : const Color(0xFFDCFCE7);
+      badgeText = isDark ? const Color(0xFF34D399) : const Color(0xFF15803D);
+      statusWidget = Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          CircleAvatar(
-            radius: 18,
-            backgroundColor: const Color(0xFFF5A952).withAlpha(40),
-            child: Text(
-              name[0].toUpperCase(),
-              style: TextStyle(color: isDark ? const Color(0xFFF5A952) : const Color(0xFF895100), fontWeight: FontWeight.w800),
+          Container(
+            width: 6,
+            height: 6,
+            decoration: const BoxDecoration(
+              color: Color(0xFF16A34A),
+              shape: BoxShape.circle,
             ),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
+          const SizedBox(width: 5),
+          Text(
+            'On Time',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w800,
+              color: badgeText,
+            ),
+          ),
+        ],
+      );
+    } else if (isClockedOut) {
+      avatarBg = isDark ? const Color(0xFF132235) : const Color(0xFFE0F2FE);
+      avatarText = isDark ? const Color(0xFF38BDF8) : const Color(0xFF0369A1);
+      badgeBg = isDark ? const Color(0xFF132235) : const Color(0xFFDBEAFE);
+      badgeText = isDark ? const Color(0xFF38BDF8) : const Color(0xFF1E40AF);
+      statusWidget = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.check_rounded, size: 11, color: Color(0xFF2563EB)),
+          const SizedBox(width: 4),
+          Text(
+            'Completed',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w800,
+              color: badgeText,
+            ),
+          ),
+        ],
+      );
+    } else {
+      avatarBg = isDark ? const Color(0xFF2B1618) : const Color(0xFFFFEDD5);
+      avatarText = isDark ? const Color(0xFFF87171) : const Color(0xFFC2410C);
+      badgeBg = isDark ? const Color(0xFF2B1618) : const Color(0xFFFEE2E2);
+      badgeText = isDark ? const Color(0xFFF87171) : const Color(0xFFB91C1C);
+      statusWidget = const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '!',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w900,
+              color: Color(0xFFDC2626),
+            ),
+          ),
+          SizedBox(width: 4),
+          Text(
+            'Alert',
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFFB91C1C),
+            ),
+          ),
+        ],
+      );
+    }
+
+    final prefix = dept.isNotEmpty ? dept : role;
+    String punchSubtitle = 'No punch recorded yet';
+    if (isClockedIn && signIn != null) {
+      punchSubtitle = '$prefix • In: $signIn';
+    } else if (isClockedOut && signIn != null) {
+      punchSubtitle = '$prefix • Shift: $signIn - ${signOut ?? ''}';
+    } else {
+      punchSubtitle = '$prefix • No punch recorded yet';
+    }
+
+    return InkWell(
+      onTap: () => _showSubordinateAttendanceDialog(member, isDark),
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF151923) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: borderCol.withAlpha(120)),
+        ),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: avatarBg,
+              child: Text(
+                initials,
+                style: TextStyle(
+                  color: avatarText,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    style: TextStyle(
+                      color: textPrimary,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    punchSubtitle,
+                    style: TextStyle(
+                      color: textSecondary,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: badgeBg,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: statusWidget,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Swipe Card for Pending Approvals Carousel ────────────────────────────
+  String _formatTimeAgo(String? appliedAtStr) {
+    if (appliedAtStr == null || appliedAtStr.isEmpty) return 'Recent';
+    try {
+      final dt = DateTime.parse(appliedAtStr);
+      final diff = DateTime.now().difference(dt);
+      if (diff.inDays >= 30) {
+        return '${(diff.inDays / 30).floor()}mo ago';
+      } else if (diff.inDays >= 7) {
+        return '${(diff.inDays / 7).floor()}w ago';
+      } else if (diff.inDays >= 1) {
+        return '${diff.inDays}d ago';
+      } else if (diff.inHours >= 1) {
+        return '${diff.inHours}h ago';
+      } else if (diff.inMinutes >= 1) {
+        return '${diff.inMinutes}m ago';
+      } else {
+        return 'Just now';
+      }
+    } catch (_) {
+      return 'Recent';
+    }
+  }
+
+  // ── Swipe Card for Pending Approvals Carousel (Option 1 Triage) ──────────
+  Widget _buildSwipeApprovalCard(
+    Map<String, dynamic> leave,
+    int index,
+    int totalCount,
+    bool isDark,
+    Color bgCard,
+    Color borderCol,
+    Color textPrimary,
+    Color textSecondary,
+  ) {
+    final applicantName = (leave['employee_name'] ?? leave['name'] ?? 'Employee').toString().trim();
+    final dept = (leave['department'] ?? 'General').toString().trim();
+    final empNo = (leave['employee_no'] ?? leave['employee_id'] ?? leave['emp_id'] ?? '').toString().trim();
+    final leaveType = (leave['leave_type'] ?? 'Earned Leave').toString().trim();
+    final daysCount = (leave['days_count'] is num)
+        ? (leave['days_count'] as num).toDouble()
+        : (double.tryParse(leave['days_count']?.toString() ?? '1.0') ?? 1.0);
+    final startDate = (leave['start_date'] ?? '').toString();
+    final endDate = (leave['end_date'] ?? startDate).toString();
+    final title = (leave['title'] ?? '').toString().trim();
+    final note = (leave['note'] ?? '').toString().trim();
+    final appliedAt = leave['applied_at']?.toString();
+    final leaveId = leave['id'] is int ? leave['id'] as int : (int.tryParse(leave['id']?.toString() ?? '0') ?? 0);
+    final timeAgo = _formatTimeAgo(appliedAt);
+
+    // Remaining Quota
+    final quotaNum = leave['remaining_days'] ?? leave['quota_left'] ?? leave['balance'];
+    final quotaStr = quotaNum != null ? '$quotaNum' : '8';
+
+    // Safe Date formatting
+    DateTime? sDt;
+    DateTime? eDt;
+    try {
+      if (startDate.isNotEmpty) sDt = DateTime.parse(startDate.split('T')[0]);
+    } catch (_) {}
+    try {
+      if (endDate.isNotEmpty) eDt = DateTime.parse(endDate.split('T')[0]);
+    } catch (_) {}
+
+    String formattedDate = 'Upcoming';
+    if (sDt != null && eDt != null && sDt != eDt) {
+      formattedDate = '${DateFormat('d MMM').format(sDt)} - ${DateFormat('d MMM yyyy').format(eDt)}';
+    } else if (sDt != null) {
+      formattedDate = DateFormat('EEE, d MMM yyyy').format(sDt);
+    }
+
+    // Duration string
+    final durationStr = daysCount == 1.0
+        ? '1 Day'
+        : (daysCount == 0.5 ? '0.5 Day' : '${daysCount == daysCount.roundToDouble() ? daysCount.toInt() : daysCount} Days');
+
+    // Initials: e.g. "PA", "RT"
+    final parts = applicantName.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    final initials = parts.isNotEmpty
+        ? (parts.length > 1 ? '${parts[0][0]}${parts[1][0]}'.toUpperCase() : parts[0][0].toUpperCase())
+        : 'E';
+
+    final reasonText = note.isNotEmpty
+        ? note
+        : (title.isNotEmpty && title.toLowerCase() != leaveType.toLowerCase()
+            ? title
+            : 'Leave request pending review & approval.');
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF161B26) : Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: isDark ? const Color(0xFF263045) : const Color(0xFFE2E8F0),
+          width: 1.2,
+        ),
+        boxShadow: isDark
+            ? []
+            : const [
+                BoxShadow(
+                  color: Color(0x0A0F172A),
+                  blurRadius: 14,
+                  offset: Offset(0, 4),
+                )
+              ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          // ── Header: Big Avatar Box, Full Name, Dept + TimeAgo, "12 of 63" pill ──
+          Row(
+            children: [
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF2E2215) : const Color(0xFFFFEDD5),
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      initials,
+                      style: TextStyle(
+                        color: isDark ? const Color(0xFFFDBA74) : const Color(0xFFC2410C),
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15.5,
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    bottom: -1,
+                    right: -1,
+                    child: Container(
+                      width: 9.5,
+                      height: 9.5,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF10B981),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isDark ? const Color(0xFF161B26) : Colors.white,
+                          width: 1.6,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      applicantName,
+                      style: TextStyle(
+                        fontSize: 15.5,
+                        fontWeight: FontWeight.w800,
+                        color: textPrimary,
+                        letterSpacing: -0.2,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            '$dept • Emp #${empNo.isNotEmpty ? empNo : "RE"}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: isDark ? Colors.white60 : const Color(0xFF64748B),
+                              fontWeight: FontWeight.w500,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          '🕒 $timeAgo',
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            color: isDark ? Colors.white38 : const Color(0xFF94A3B8),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4.5),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF1E2638) : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '${index + 1} of $totalCount',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: isDark ? Colors.white70 : const Color(0xFF64748B),
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          // ── Badges in Wrap: Date, Leave Type, and Quota (Zero Horizontal Overflow) ──
+          Wrap(
+            spacing: 6,
+            runSpacing: 5,
+            children: [
+              // 1. Date Chip
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF1C2230) : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.calendar_today_rounded, size: 11.5, color: isDark ? Colors.white70 : const Color(0xFF475569)),
+                    const SizedBox(width: 5),
+                    Text(
+                      formattedDate,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : const Color(0xFF1E293B),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // 2. Leave Type Chip
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF2E2215) : const Color(0xFFFFEDD5),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.schedule_rounded, size: 11.5, color: Color(0xFFD97706)),
+                    const SizedBox(width: 4.5),
+                    Text(
+                      '$leaveType ($durationStr)',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFFB45309),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // 3. Quota Chip
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF1A2234) : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.pie_chart_outline_rounded, size: 11.5, color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7)),
+                    const SizedBox(width: 4.5),
+                    Text(
+                      'Quota: $quotaStr left',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0369A1),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+
+          // ── Reason quotation box ──
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF11151E) : const Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: isDark ? const Color(0xFF1E2638) : const Color(0xFFF1F5F9),
+              ),
+            ),
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(name, style: TextStyle(color: textPrimary, fontWeight: FontWeight.w700, fontSize: 13)),
-                Text('$role • $dept', style: TextStyle(color: textSecondary, fontSize: 10, fontWeight: FontWeight.w500)),
-                const SizedBox(height: 2),
-                if (signIn != null)
-                  Text(
-                    signOut != null ? 'Shift: $signIn - $signOut' : 'In: $signIn (Active Shift)',
-                    style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.w700),
+                Text(
+                  '❝ ',
+                  style: TextStyle(
+                    color: isDark ? Colors.white54 : const Color(0xFF475569),
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13,
+                    height: 1.1,
                   ),
+                ),
+                Expanded(
+                  child: Text(
+                    reasonText,
+                    style: TextStyle(
+                      color: isDark ? Colors.white70 : const Color(0xFF475569),
+                      fontSize: 11.5,
+                      height: 1.35,
+                      fontStyle: FontStyle.italic,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ],
             ),
           ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
+
+          // ── 2 Action Buttons: Reject & Approve (50/50 Split) ──
+          Row(
             children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: statusBg,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  todayStatus,
-                  style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.w800),
+              // Reject (Soft Coral)
+              Expanded(
+                child: InkWell(
+                  onTap: () => _showRejectConfirmation(leaveId, isDark, borderCol, textPrimary, textSecondary),
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF2A1518) : const Color(0xFFFFF1F2),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: const Color(0xFFFECDD3),
+                        width: 1.2,
+                      ),
+                    ),
+                    alignment: Alignment.center,
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.close_rounded, size: 16, color: Color(0xFFDC2626)),
+                        SizedBox(width: 6),
+                        Text(
+                          'Reject',
+                          style: TextStyle(
+                            color: Color(0xFFDC2626),
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
-              const SizedBox(height: 4),
-              GestureDetector(
-                onTap: () => _showSubordinateAttendanceDialog(member, isDark),
-                child: const Text(
-                  'View Logs →',
-                  style: TextStyle(color: Color(0xFF3F83F8), fontSize: 11, fontWeight: FontWeight.w700),
+              const SizedBox(width: 12),
+
+              // Approve (Rich Emerald Green)
+              Expanded(
+                child: InkWell(
+                  onTap: () => _actionTeamLeave(leaveId, 'approve'),
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F766E), // rich emerald green
+                      borderRadius: BorderRadius.circular(14),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF0F766E).withAlpha(45),
+                          blurRadius: 8,
+                          offset: const Offset(0, 3),
+                        )
+                      ],
+                    ),
+                    alignment: Alignment.center,
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.check_rounded, size: 16, color: Colors.white),
+                        SizedBox(width: 6),
+                        Text(
+                          'Approve',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ],
           ),
         ],
       ),
+    );
+  }
+void _showRejectConfirmation(int leaveId, bool isDark, Color borderCol, Color textPrimary, Color textSecondary) {
+    final reasonCtrl = TextEditingController();
+    final dialogBg = isDark ? const Color(0xFF131722) : Colors.white;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: dialogBg,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20), side: BorderSide(color: borderCol)),
+        title: Text('Reject Leave Request', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: textPrimary)),
+        content: TextField(
+          controller: reasonCtrl,
+          style: TextStyle(color: textPrimary, fontSize: 13),
+          decoration: InputDecoration(
+            labelText: 'Rejection Reason (Optional)',
+            labelStyle: TextStyle(color: textSecondary),
+            filled: true,
+            fillColor: isDark ? const Color(0xFF1A1E2B) : const Color(0xFFF0F4FD),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: borderCol)),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text('Cancel', style: TextStyle(color: textSecondary))),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _actionTeamLeave(leaveId, 'reject', note: reasonCtrl.text.trim());
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFDC2626)),
+            child: const Text('Confirm Reject', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Full View All Approvals Bottom Sheet ──────────────────────────────────
+  void _showAllApprovalsSheet(
+    BuildContext context,
+    List<dynamic> leaves,
+    bool isDark,
+    Color bgCard,
+    Color borderCol,
+    Color textPrimary,
+    Color textSecondary,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        String sheetSearchQuery = '';
+        String sheetDeptFilter = _teamLeaveDeptFilter;
+        String sheetStatusFilter = 'Pending';
+
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final filtered = leaves.where((l) {
+              final st = (l['status'] ?? '').toString().toLowerCase();
+              if (sheetStatusFilter == 'Pending' && !st.contains('pending')) return false;
+              if (sheetStatusFilter == 'Approved' && !st.contains('approved')) return false;
+              if (sheetStatusFilter == 'Rejected' && !st.contains('rejected')) return false;
+
+              if (sheetDeptFilter != 'All') {
+                final d = (l['department'] ?? '').toString().trim().toLowerCase();
+                if (d != sheetDeptFilter.toLowerCase()) return false;
+              }
+
+              if (sheetSearchQuery.isNotEmpty) {
+                final q = sheetSearchQuery.toLowerCase();
+                final name = (l['employee_name'] ?? l['name'] ?? '').toString().toLowerCase();
+                final empId = (l['employee_no'] ?? l['employee_id'] ?? '').toString().toLowerCase();
+                final dept = (l['department'] ?? '').toString().toLowerCase();
+                if (!name.contains(q) && !empId.contains(q) && !dept.contains(q)) return false;
+              }
+              return true;
+            }).toList();
+
+            return Container(
+              height: double.infinity,
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF131722) : Colors.white,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                border: Border.all(color: borderCol),
+              ),
+              child: Column(
+                children: [
+                  const SizedBox(height: 12),
+                  Container(
+                    width: 44,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: textSecondary.withAlpha(60),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
+                  // Header
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'All Approval Records',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w800,
+                                color: textPrimary,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Showing ${filtered.length} of ${leaves.length} total applications',
+                              style: TextStyle(fontSize: 11, color: textSecondary),
+                            ),
+                          ],
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded),
+                          color: textSecondary,
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Status filter pills
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: ['All', 'Pending', 'Approved', 'Rejected'].map((st) {
+                          final isSel = sheetStatusFilter == st;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: GestureDetector(
+                              onTap: () => setSheetState(() => sheetStatusFilter = st),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: isSel ? const Color(0xFFB45309) : (isDark ? const Color(0xFF1E2638) : const Color(0xFFF1F5F9)),
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                                child: Text(
+                                  st,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: isSel ? Colors.white : textSecondary,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+
+                  // Search input
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                    child: TextField(
+                      style: TextStyle(color: textPrimary, fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: 'Search by employee or department...',
+                        hintStyle: TextStyle(color: textSecondary.withAlpha(140), fontSize: 12),
+                        prefixIcon: Icon(Icons.search_rounded, size: 18, color: textSecondary),
+                        filled: true,
+                        fillColor: isDark ? const Color(0xFF1A1F2C) : const Color(0xFFF8FAFC),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: BorderSide(color: borderCol),
+                        ),
+                      ),
+                      onChanged: (val) => setSheetState(() => sheetSearchQuery = val),
+                    ),
+                  ),
+
+                  const SizedBox(height: 8),
+
+                  // List
+                  Expanded(
+                    child: filtered.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.search_off_rounded, size: 40, color: textSecondary.withAlpha(120)),
+                                const SizedBox(height: 8),
+                                Text('No matching records found', style: TextStyle(fontWeight: FontWeight.w700, color: textPrimary)),
+                              ],
+                            ),
+                          )
+                        : ListView.builder(
+                            padding: EdgeInsets.fromLTRB(20, 8, 20, MediaQuery.of(ctx).padding.bottom + 24),
+                            itemCount: filtered.length,
+                            itemBuilder: (context, i) {
+                              return _buildTeamLeaveCard(
+                                filtered[i],
+                                isDark,
+                                bgCard,
+                                borderCol,
+                                textPrimary,
+                                textSecondary,
+                                canAction: true,
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ── Full Live Punch Board Bottom Sheet ────────────────────────────────────
+  void _showLivePunchBoardSheet(
+    BuildContext context,
+    List<dynamic> members,
+    bool isDark,
+    Color bgCard,
+    Color borderCol,
+    Color textPrimary,
+    Color textSecondary,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        String searchQuery = '';
+        String roleFilter = 'All';
+
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final filtered = members.where((m) {
+              final role = (m['role'] ?? '').toString().toLowerCase().replaceAll(RegExp(r'[\s_-]'), '');
+              final isSrTL = (role.contains('senior') || role.contains('sr') || role.contains('sinor') || role.contains('snr')) &&
+                  (role.contains('lead') || role.contains('tl') || role.contains('head') || role.contains('leader') || role.contains('manager'));
+              final isTL = !isSrTL && (role.contains('teamleader') || role.contains('subteamlead') || role.contains('lead') || role.contains('tl') || role.contains('head') || role.contains('leader'));
+              final isAdm = role == 'admin' || role == 'superadmin';
+              final isMgr = !isAdm && (role == 'manager' || role.contains('manager') || role == 'projectmanager');
+              final isEmp = role == 'employee' || (!isTL && !isSrTL && !isAdm && !isMgr);
+
+              if (roleFilter == 'Senior Team Leader' && !isSrTL) return false;
+              if (roleFilter == 'Admin' && !isAdm) return false;
+              if (roleFilter == 'Manager' && !isMgr) return false;
+              if (roleFilter == 'Team Leader' && !isTL) return false;
+              if (roleFilter == 'Employee' && !isEmp) return false;
+
+              if (searchQuery.isNotEmpty) {
+                final q = searchQuery.toLowerCase();
+                final name = (m['name'] ?? m['full_name'] ?? '').toString().toLowerCase();
+                final empId = (m['employee_no'] ?? m['emp_id'] ?? m['id'] ?? '').toString().toLowerCase();
+                final dept = (m['department'] ?? '').toString().toLowerCase();
+                if (!name.contains(q) && !empId.contains(q) && !dept.contains(q)) return false;
+              }
+              return true;
+            }).toList();
+
+            return Container(
+              height: double.infinity,
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF131722) : Colors.white,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                border: Border.all(color: borderCol),
+              ),
+              child: Column(
+                children: [
+                  const SizedBox(height: 12),
+                  Container(
+                    width: 44,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: textSecondary.withAlpha(60),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Team Attendance & Punches',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w800,
+                                color: textPrimary,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '• Live Feed • ${DateFormat('d MMM yyyy').format(DateTime.now())} • ${filtered.length} of ${members.length} Active Roster',
+                              style: TextStyle(fontSize: 11, color: textSecondary),
+                            ),
+                          ],
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded),
+                          color: textSecondary,
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Search bar
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    child: TextField(
+                      style: TextStyle(color: textPrimary, fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: 'Quick search members or ID...',
+                        hintStyle: TextStyle(color: textSecondary.withAlpha(140), fontSize: 12),
+                        prefixIcon: Icon(Icons.search_rounded, size: 18, color: textSecondary),
+                        filled: true,
+                        fillColor: isDark ? const Color(0xFF1A1F2C) : const Color(0xFFF8FAFC),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: BorderSide(color: borderCol),
+                        ),
+                      ),
+                      onChanged: (val) => setSheetState(() => searchQuery = val),
+                    ),
+                  ),
+
+                  // List
+                  Expanded(
+                    child: filtered.isEmpty
+                        ? Center(
+                            child: Text('No members found', style: TextStyle(fontWeight: FontWeight.w700, color: textPrimary)),
+                          )
+                        : ListView.builder(
+                            padding: EdgeInsets.fromLTRB(20, 8, 20, MediaQuery.of(ctx).padding.bottom + 24),
+                            itemCount: filtered.length,
+                            itemBuilder: (context, i) {
+                              return _buildMemberPunchTile(filtered[i], isDark, bgCard, borderCol, textPrimary, textSecondary);
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 

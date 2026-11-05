@@ -30,6 +30,19 @@ class _LoginScreenState extends State<LoginScreen> {
     if (mounted) setState(() {});
   }
 
+  void _togglePasswordVisibility() {
+    final curPos = _password.selection.isValid ? _password.selection.extentOffset : _password.text.length;
+    setState(() {
+      _obscurePassword = !_obscurePassword;
+    });
+    // Preserve cursor position without any unintended range selection
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final safeOffset = curPos.clamp(0, _password.text.length);
+      _password.selection = TextSelection.collapsed(offset: safeOffset);
+    });
+  }
+
   @override
   void dispose() {
     themeController.removeListener(_onThemeChanged);
@@ -283,6 +296,22 @@ class _LoginScreenState extends State<LoginScreen> {
                       child: TextField(
                         controller: _password,
                         obscureText: _obscurePassword,
+                        keyboardType: TextInputType.visiblePassword,
+                        enableSuggestions: false,
+                        autocorrect: false,
+                        enableInteractiveSelection: true,
+                        onTap: () {
+                          // Prevent unwanted range selection on click;
+                          // place caret cleanly at the tapped position so user can edit middle characters
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (!mounted) return;
+                            if (_password.selection.isValid && !_password.selection.isCollapsed) {
+                              _password.selection = TextSelection.collapsed(
+                                offset: _password.selection.baseOffset.clamp(0, _password.text.length),
+                              );
+                            }
+                          });
+                        },
                         style: TextStyle(color: textPrimary, fontWeight: FontWeight.w600, fontSize: 14),
                         decoration: InputDecoration(
                           prefixIcon: Icon(Icons.lock_outline, color: iconColor, size: 20),
@@ -292,7 +321,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               color: iconColor,
                               size: 20,
                             ),
-                            onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                            onPressed: _togglePasswordVisibility,
                           ),
                           hintText: 'Enter your work password',
                           hintStyle: TextStyle(color: textHint, fontSize: 13, fontWeight: FontWeight.w400),

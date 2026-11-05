@@ -36,6 +36,10 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
   bool _loadingPunchRequests = false;
   bool _actionInProgress = false;
   int _mainTabSegment = 0; // 0 = My Attendance, 1 = Punch Approvals
+  String _punchApprovalDeptFilter = 'All';
+  String _punchApprovalTypeFilter = 'All'; // 'All', 'Clock-In', 'Clock-Out'
+  final TextEditingController _punchSearchCtrl = TextEditingController();
+  String _punchSearchQuery = '';
   String _activeSubTab = 'Day wise'; // 'Day wise', 'Weekly', 'Overview'
   static DateTime _initialCycleMonth() {
     final now = DateTime.now();
@@ -129,6 +133,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     themeController.removeListener(_onThemeChanged);
     _leaveTitleCtrl.dispose();
     _leaveNoteCtrl.dispose();
+    _punchSearchCtrl.dispose();
     _autoSyncTimer?.cancel();
     super.dispose();
   }
@@ -1985,10 +1990,9 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                         }
                       },
                     ),
-                    const SizedBox(height: 12),
-                  ],
-                  Container(
-                    padding: const EdgeInsets.all(14),
+                  ] else ...[
+                    Container(
+                      padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
                       color: isDark ? const Color(0xFF241C12) : const Color(0xFFFFFBEB),
                       borderRadius: BorderRadius.circular(16),
@@ -2083,6 +2087,7 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                       ],
                     ),
                   ),
+                ],
                 ],
 
                 const SizedBox(height: 20),
@@ -2555,6 +2560,34 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
                         ),
                       ),
                     ],
+                  ),
+                ] else if (lStatus.toLowerCase() == 'approved') ...[
+                  const SizedBox(height: 14),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withAlpha(isDark ? 25 : 14),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.blue.withAlpha(50)),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline_rounded, size: 16, color: isDark ? Colors.lightBlueAccent : Colors.blue.shade700),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Leave is approved. To cancel or remove an approved leave, please request your Reporting Manager.',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              color: isDark ? Colors.lightBlueAccent : Colors.blue.shade800,
+                              height: 1.3,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ],
@@ -4278,6 +4311,43 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     }
   }
 
+    Widget _punchTypeChip(
+    String key,
+    String label,
+    bool isDark,
+    Color borderCol,
+    Color textSecondary,
+  ) {
+    final isSel = _punchApprovalTypeFilter == key;
+    return GestureDetector(
+      onTap: () => setState(() => _punchApprovalTypeFilter = key),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: isSel
+              ? (isDark ? const Color(0xFFF59E0B) : const Color(0xFF6B2D05))
+              : (isDark ? const Color(0xFF1E2638) : const Color(0xFFF1F5F9)),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSel
+                ? (isDark ? const Color(0xFFF59E0B) : const Color(0xFF6B2D05))
+                : borderCol,
+            width: isSel ? 1.2 : 0.8,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: isSel ? FontWeight.w800 : FontWeight.w600,
+            color: isSel ? Colors.white : textSecondary,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildPunchApprovalsView(
     bool isDark,
     Color bgCard,
@@ -4289,6 +4359,53 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
     Color amberPrimary,
     Color amberDark,
   ) {
+    // Extract unique departments and counts
+    final Map<String, int> deptCounts = {};
+    int inCount = 0;
+    int outCount = 0;
+
+    for (var p in _teamPunchRequests) {
+      final d = (p['department'] ?? 'General').toString().trim();
+      if (d.isNotEmpty) {
+        deptCounts[d] = (deptCounts[d] ?? 0) + 1;
+      }
+      final signOut = p['sign_out'];
+      final isCheckOut = (signOut != null && signOut.toString().isNotEmpty) || (p['clock_out'] != null && p['clock_out'].toString().isNotEmpty);
+      if (isCheckOut) {
+        outCount++;
+      } else {
+        inCount++;
+      }
+    }
+    final deptList = ['All', ...deptCounts.keys.toList()..sort()];
+
+    // Filter punch requests
+    final filteredPunchRequests = _teamPunchRequests.where((p) {
+      // 1. Department filter
+      if (_punchApprovalDeptFilter != 'All') {
+        final d = (p['department'] ?? 'General').toString().trim().toLowerCase();
+        if (d != _punchApprovalDeptFilter.toLowerCase()) return false;
+      }
+
+      // 2. Punch Type filter
+      final signOut = p['sign_out'];
+      final isCheckOut = (signOut != null && signOut.toString().isNotEmpty) || (p['clock_out'] != null && p['clock_out'].toString().isNotEmpty);
+      if (_punchApprovalTypeFilter == 'Clock-In' && isCheckOut) return false;
+      if (_punchApprovalTypeFilter == 'Clock-Out' && !isCheckOut) return false;
+
+      // 3. Search query
+      if (_punchSearchQuery.isNotEmpty) {
+        final q = _punchSearchQuery.toLowerCase();
+        final name = (p['name'] ?? p['employee_name'] ?? '').toString().toLowerCase();
+        final empId = (p['employee_id'] ?? p['emp_id'] ?? p['employee_no'] ?? '').toString().toLowerCase();
+        final dept = (p['department'] ?? '').toString().toLowerCase();
+        final bldg = (p['nearest_building'] ?? '').toString().toLowerCase();
+        if (!name.contains(q) && !empId.contains(q) && !dept.contains(q) && !bldg.contains(q)) return false;
+      }
+
+      return true;
+    }).toList();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -4354,21 +4471,124 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
 
         const SizedBox(height: 16),
 
-        // ── Punch Requests List Header ─────────────────────────────────────────
+        // ── Punch Requests List Header & Filters ──────────────────────────────
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              'Pending Punch Requests (${_teamPunchRequests.length})',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: textPrimary),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Pending Punch Requests',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  filteredPunchRequests.length == _teamPunchRequests.length
+                      ? '${_teamPunchRequests.length} Total Requests'
+                      : 'Showing ${filteredPunchRequests.length} of ${_teamPunchRequests.length} requests',
+                  style: TextStyle(fontSize: 11, color: textSecondary, fontWeight: FontWeight.w600),
+                ),
+              ],
             ),
             IconButton(
-              icon: Icon(Icons.refresh_rounded, size: 20, color: textSecondary),
+              icon: const Icon(Icons.refresh_rounded, size: 20, color: Color(0xFF3B82F6)),
               onPressed: _loadingPunchRequests ? null : _loadPunchRequests,
             ),
           ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 12),
+
+        // Search Input
+        Container(
+          height: 42,
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF141924) : const Color(0xFFF8FAFC),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: borderCol),
+          ),
+          child: TextField(
+            controller: _punchSearchCtrl,
+            style: TextStyle(color: textPrimary, fontSize: 13),
+            decoration: InputDecoration(
+              hintText: 'Search by employee name, ID, or building...',
+              hintStyle: TextStyle(color: textSecondary.withAlpha(140), fontSize: 12),
+              prefixIcon: Icon(Icons.search_rounded, size: 18, color: textSecondary),
+              suffixIcon: _punchSearchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 16),
+                      color: textSecondary,
+                      onPressed: () {
+                        _punchSearchCtrl.clear();
+                        setState(() => _punchSearchQuery = '');
+                      },
+                    )
+                  : null,
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(vertical: 10),
+            ),
+            onChanged: (val) => setState(() => _punchSearchQuery = val.trim()),
+          ),
+        ),
+        const SizedBox(height: 10),
+
+        // Filter 1: Punch Type (All / Clock-In / Clock-Out)
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              _punchTypeChip('All', 'All (${_teamPunchRequests.length})', isDark, borderCol, textSecondary),
+              const SizedBox(width: 8),
+              _punchTypeChip('Clock-In', '🟢 Clock-In ($inCount)', isDark, borderCol, textSecondary),
+              const SizedBox(width: 8),
+              _punchTypeChip('Clock-Out', '🔴 Clock-Out ($outCount)', isDark, borderCol, textSecondary),
+            ],
+          ),
+        ),
+
+        // Filter 2: Department Selector
+        if (deptList.length > 1) ...[
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: deptList.map((dept) {
+                final isSel = _punchApprovalDeptFilter.toLowerCase() == dept.toLowerCase();
+                final dCount = dept == 'All' ? _teamPunchRequests.length : (deptCounts[dept] ?? 0);
+                final label = dept == 'All' ? '🏢 All Depts ($dCount)' : '$dept ($dCount)';
+                return Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: GestureDetector(
+                    onTap: () => setState(() => _punchApprovalDeptFilter = dept),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: isSel
+                            ? (isDark ? const Color(0xFF1E293B) : const Color(0xFFE0F2FE))
+                            : (isDark ? const Color(0xFF141824) : const Color(0xFFF1F5F9)),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: isSel ? const Color(0xFF0284C7) : borderCol,
+                          width: isSel ? 1.2 : 0.8,
+                        ),
+                      ),
+                      child: Text(
+                        label,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: isSel ? FontWeight.w800 : FontWeight.w600,
+                          color: isSel ? (isDark ? Colors.white : const Color(0xFF0284C7)) : textSecondary,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+        const SizedBox(height: 14),
 
         if (_loadingPunchRequests)
           const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
@@ -4401,9 +4621,32 @@ class AttendanceInfoTabState extends State<AttendanceInfoTab> {
               ),
             ),
           )
+        else if (filteredPunchRequests.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(26),
+            decoration: BoxDecoration(
+              color: bgCard,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: borderCol),
+            ),
+            child: Center(
+              child: Column(
+                children: [
+                  Icon(Icons.filter_alt_off_rounded, size: 36, color: textSecondary.withAlpha(140)),
+                  const SizedBox(height: 10),
+                  Text('No Matching Punch Requests', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: textPrimary)),
+                  const SizedBox(height: 4),
+                  Text('Try adjusting your search query, punch type, or department filter.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 11, color: textSecondary)),
+                ],
+              ),
+            ),
+          )
         else
-          ...List.generate(_teamPunchRequests.length, (idx) {
-            final p = _teamPunchRequests[idx];
+          ...List.generate(filteredPunchRequests.length, (idx) {
+            final p = filteredPunchRequests[idx];
             final name = p['name'] ?? p['employee_name'] ?? 'Employee';
             final role = p['role'] ?? 'Employee';
             final dept = p['department'] ?? 'General';

@@ -148,10 +148,10 @@ class _EngageTabState extends State<EngageTab> {
 
   void _initControllers() {
     _nameCtrl = TextEditingController(text: _currentUser['name'] ?? _currentUser['full_name'] ?? '');
-    _phoneCtrl = TextEditingController(text: _currentUser['phone_number'] ?? '');
-    _emailCtrl = TextEditingController(text: _currentUser['email'] ?? '');
-    _deptCtrl = TextEditingController(text: _currentUser['department'] ?? 'Product Engineering');
-    _desigCtrl = TextEditingController(text: _currentUser['designation'] ?? 'UI/UX Designer');
+    _phoneCtrl = TextEditingController(text: _currentUser['phone_number'] ?? _currentUser['mobile_number'] ?? '');
+    _emailCtrl = TextEditingController(text: _currentUser['email'] ?? _currentUser['personal_email'] ?? '');
+    _deptCtrl = TextEditingController(text: (_currentUser['department'] ?? '').toString());
+    _desigCtrl = TextEditingController(text: (_currentUser['designation'] ?? '').toString());
     final jStr = (_currentUser['date_of_joining'] ?? _currentUser['joining_date'])?.toString();
     if (jStr != null && jStr.isNotEmpty) {
       _joiningDate = DateTime.tryParse(jStr);
@@ -180,7 +180,15 @@ class _EngageTabState extends State<EngageTab> {
         if (mounted) {
           setState(() {
             _currentUser = Map<String, dynamic>.from(res);
-            _initControllers();
+            _nameCtrl.text = _currentUser['name'] ?? _currentUser['full_name'] ?? '';
+            _phoneCtrl.text = _currentUser['phone_number'] ?? _currentUser['mobile_number'] ?? '';
+            _emailCtrl.text = _currentUser['email'] ?? _currentUser['personal_email'] ?? '';
+            _deptCtrl.text = (_currentUser['department'] ?? '').toString();
+            _desigCtrl.text = (_currentUser['designation'] ?? '').toString();
+            final jStr = (_currentUser['date_of_joining'] ?? _currentUser['joining_date'])?.toString();
+            if (jStr != null && jStr.isNotEmpty) {
+              _joiningDate = DateTime.tryParse(jStr);
+            }
           });
           widget.onUserUpdated?.call(_currentUser);
         }
@@ -268,8 +276,6 @@ class _EngageTabState extends State<EngageTab> {
         'date_of_joining': formattedDate,
         'joining_date': formattedDate,
         'email': _emailCtrl.text.trim(),
-        'department': _deptCtrl.text.trim(),
-        'designation': _desigCtrl.text.trim(),
       };
 
       final res = await apiPut('/api/user/profile', payload, token: widget.token);
@@ -307,10 +313,14 @@ class _EngageTabState extends State<EngageTab> {
     const amberDark = Color(0xFF895100);
     const alertRed = Color(0xFFFF2A55);
 
-    final rawName = _currentUser['name'] ?? _currentUser['full_name'] ?? 'Robert Smith';
-    final empId = _currentUser['emp_id'] ?? _currentUser['id'] ?? 'EMP-84920';
-    final dept = _currentUser['department'] ?? 'Product Engineering';
-    final desig = _currentUser['designation'] ?? 'UI/UX Designer';
+    final rawName = (_currentUser['name'] ?? _currentUser['full_name'] ?? 'Employee').toString().trim();
+    final empId = (_currentUser['employee_no'] ?? _currentUser['emp_id'] ?? _currentUser['id'] ?? '').toString().trim();
+    final dept = (_currentUser['department'] ?? '').toString().trim().isNotEmpty
+        ? _currentUser['department'].toString().trim()
+        : 'Department';
+    final desig = (_currentUser['designation'] ?? '').toString().trim().isNotEmpty
+        ? _currentUser['designation'].toString().trim()
+        : 'Designation';
 
     final percentage = _completenessPercentage;
     final isIncomplete = _isProfileIncomplete;
@@ -785,7 +795,7 @@ class _EngageTabState extends State<EngageTab> {
                 ),
                 const SizedBox(height: 14),
 
-                // Department & Designation Row
+                // Department & Designation Row (Read-only, dull color)
                 Row(
                   children: [
                     Expanded(
@@ -794,7 +804,15 @@ class _EngageTabState extends State<EngageTab> {
                         children: [
                           _formLabel('DEPARTMENT', false, textSecondary),
                           const SizedBox(height: 6),
-                          _formTextField(_deptCtrl, 'Department', Icons.business_rounded, bgInput, textPrimary, textSecondary),
+                          _formTextField(
+                            _deptCtrl,
+                            'Department',
+                            Icons.business_rounded,
+                            bgInput,
+                            textPrimary,
+                            textSecondary,
+                            readOnly: true,
+                          ),
                         ],
                       ),
                     ),
@@ -805,7 +823,15 @@ class _EngageTabState extends State<EngageTab> {
                         children: [
                           _formLabel('DESIGNATION', false, textSecondary),
                           const SizedBox(height: 6),
-                          _formTextField(_desigCtrl, 'Designation', Icons.work_outline_rounded, bgInput, textPrimary, textSecondary),
+                          _formTextField(
+                            _desigCtrl,
+                            'Designation',
+                            Icons.work_outline_rounded,
+                            bgInput,
+                            textPrimary,
+                            textSecondary,
+                            readOnly: true,
+                          ),
                         ],
                       ),
                     ),
@@ -1258,37 +1284,55 @@ class _EngageTabState extends State<EngageTab> {
     Color textSecondary, {
     TextInputType keyboardType = TextInputType.text,
     bool isAlert = false,
+    bool readOnly = false,
+    Widget? suffixIcon,
+    VoidCallback? onTap,
     void Function(String)? onChanged,
   }) {
+    final isDark = themeController.isDarkMode;
+    final dullBg = isDark ? const Color(0xFF141722) : const Color(0xFFE9EDF5);
+    final dullBorder = isDark ? const Color(0xFF1E2432) : const Color(0xFFD5DDE8);
+    final dullText = isDark ? const Color(0xFF8A97AC) : const Color(0xFF64748B);
+    final dullIcon = isDark ? const Color(0xFF5A6677) : const Color(0xFF94A3B8);
+
     return Container(
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
-        color: bgInput,
+        color: readOnly ? dullBg : bgInput,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isAlert ? const Color(0xFFFF2A55) : Colors.transparent,
+          color: isAlert ? const Color(0xFFFF2A55) : (readOnly ? dullBorder : Colors.transparent),
           width: isAlert ? 1.5 : 1.0,
         ),
       ),
       child: Row(
         children: [
-          Icon(icon, size: 18, color: isAlert ? const Color(0xFFFF2A55) : textSecondary),
+          Icon(icon, size: 18, color: isAlert ? const Color(0xFFFF2A55) : (readOnly ? dullIcon : textSecondary)),
           const SizedBox(width: 10),
           Expanded(
             child: TextField(
               controller: ctrl,
+              readOnly: readOnly,
+              showCursor: !readOnly,
+              enableInteractiveSelection: !readOnly,
               keyboardType: keyboardType,
               onChanged: onChanged,
-              style: TextStyle(color: textPrimary, fontSize: 13, fontWeight: FontWeight.w600),
+              onTap: onTap,
+              style: TextStyle(
+                color: readOnly ? dullText : textPrimary,
+                fontSize: 13,
+                fontWeight: readOnly ? FontWeight.w500 : FontWeight.w600,
+              ),
               decoration: InputDecoration(
                 hintText: hint,
-                hintStyle: TextStyle(color: textSecondary.withAlpha(150), fontSize: 12),
+                hintStyle: TextStyle(color: (readOnly ? dullText : textSecondary).withAlpha(150), fontSize: 12),
                 border: InputBorder.none,
                 isDense: true,
               ),
             ),
           ),
+          if (suffixIcon != null) suffixIcon,
         ],
       ),
     );

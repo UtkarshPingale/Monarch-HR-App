@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 import '../config/api_config.dart';
@@ -53,6 +56,58 @@ class HomeScreenTabState extends State<HomeScreenTab> {
   double _remainingLeaves = 19.5;
   int _pendingLeavesCount = 0;
   int _teamPendingApprovalsCount = 0;
+
+  // Vehicle photo states for Driver / Driver TL roles
+  File? _vehiclePhotoInFile;
+  String? _vehiclePhotoInBase64;
+  File? _vehiclePhotoOutFile;
+  String? _vehiclePhotoOutBase64;
+  bool _isCapturingVehiclePhoto = false;
+
+  bool get _isDriverRole {
+    final dept = (_currentUser['department'] ?? '').toString().toLowerCase().trim();
+    final desig = (_currentUser['designation'] ?? '').toString().toLowerCase().trim();
+    final role = (_currentUser['role'] ?? '').toString().toLowerCase().trim();
+    return dept.contains('diver') || dept.contains('driver') ||
+           desig.contains('diver') || desig.contains('driver') ||
+           role.contains('diver') || role.contains('driver');
+  }
+
+  Future<void> _captureVehiclePhoto({required bool isCheckIn}) async {
+    try {
+      setState(() => _isCapturingVehiclePhoto = true);
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickImage(
+        source: ImageSource.camera,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 70,
+        preferredCameraDevice: CameraDevice.rear,
+      );
+
+      if (pickedFile != null) {
+        final bytes = await pickedFile.readAsBytes();
+        final base64String = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+        setState(() {
+          if (isCheckIn) {
+            _vehiclePhotoInFile = File(pickedFile.path);
+            _vehiclePhotoInBase64 = base64String;
+          } else {
+            _vehiclePhotoOutFile = File(pickedFile.path);
+            _vehiclePhotoOutBase64 = base64String;
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error accessing camera: $e'), backgroundColor: Colors.redAccent),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isCapturingVehiclePhoto = false);
+    }
+  }
 
   @override
   void initState() {
@@ -275,11 +330,16 @@ class HomeScreenTabState extends State<HomeScreenTab> {
     try {
       final pos = await getPosition();
       final clientNow = DateTime.now();
-      final res = await apiPost('/api/attendance/clock-in', {
+      final clockInPayload = <String, dynamic>{
         'lat': pos?.latitude,
         'lng': pos?.longitude,
         'client_time': clientNow.toIso8601String(),
-      }, token: widget.token);
+      };
+      if (_isDriverRole && _vehiclePhotoInBase64 != null) {
+        clockInPayload['vehicle_photo'] = _vehiclePhotoInBase64;
+        clockInPayload['vehicle_photo_in'] = _vehiclePhotoInBase64;
+      }
+      final res = await apiPost('/api/attendance/clock-in', clockInPayload, token: widget.token);
 
       if (res['error'] != null) {
         if (res['error'].toString().toLowerCase().contains('token')) {
@@ -301,6 +361,8 @@ class HomeScreenTabState extends State<HomeScreenTab> {
             _clockInTime  = clientNow;
             _sessionId    = res['session_id']?.toString();
             _message      = msg;
+            _vehiclePhotoInFile = null;
+            _vehiclePhotoInBase64 = null;
           });
         }
         _startLocationLoop();
@@ -355,11 +417,16 @@ class HomeScreenTabState extends State<HomeScreenTab> {
         return;
       }
 
-      final res = await apiPost('/api/attendance/clock-out', {
+      final clockOutPayload = <String, dynamic>{
         'lat': pos.latitude,
         'lng': pos.longitude,
         'client_time': DateTime.now().toIso8601String(),
-      }, token: widget.token);
+      };
+      if (_isDriverRole && _vehiclePhotoOutBase64 != null) {
+        clockOutPayload['vehicle_photo'] = _vehiclePhotoOutBase64;
+        clockOutPayload['vehicle_photo_out'] = _vehiclePhotoOutBase64;
+      }
+      final res = await apiPost('/api/attendance/clock-out', clockOutPayload, token: widget.token);
 
       if (res['error'] != null) {
         final errStr = res['error'].toString();
@@ -393,6 +460,8 @@ class HomeScreenTabState extends State<HomeScreenTab> {
             _clockedIn    = false;
             _sessionId    = null;
             _message      = msg;
+            _vehiclePhotoOutFile = null;
+            _vehiclePhotoOutBase64 = null;
           });
         }
         _locTimer?.cancel();
@@ -1080,75 +1149,312 @@ class HomeScreenTabState extends State<HomeScreenTab> {
 
                 const SizedBox(height: 20),
 
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _loading
-                        ? null
-                        : () {
-                            if (_clockedIn) {
-                              _handleCheckOutPress(isDark, textPrimary, textSecondary, displayCheckIn);
-                            } else if (lastCheckOutToday != null) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    isWaitingApproval
-                                        ? '⏳ Shift completed at $displayCheckOut. Punch is awaiting TL review.'
-                                        : '✅ Shift completed for today (Checked out at $displayCheckOut).',
-                                  ),
-                                  duration: const Duration(seconds: 3),
-                                  backgroundColor: const Color(0xFF1E293B),
-                                ),
-                              );
-                            } else {
-                              _handleCheckInPress(todayRecords, isDark, textPrimary, textSecondary, amberPrimary);
-                            }
-                          },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _clockedIn
-                          ? amberPrimary
-                          : (lastCheckOutToday != null
-                              ? (isWaitingApproval
-                                  ? (isDark ? const Color(0xFF332014) : const Color(0xFFFEF3C7))
-                                  : (isDark ? const Color(0xFF132A1C) : const Color(0xFFDCFCE7)))
-                              : amberPrimary),
-                      foregroundColor: _clockedIn
-                          ? const Color(0xFF6B3F00)
-                          : (lastCheckOutToday != null
-                              ? (isWaitingApproval
-                                  ? (isDark ? const Color(0xFFFBBF24) : const Color(0xFFB45309))
-                                  : (isDark ? const Color(0xFF4ADE80) : const Color(0xFF166534)))
-                              : const Color(0xFF6B3F00)),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-                      elevation: 0,
+                // Driver / Driver TL Vehicle Photo Workflow
+                if (_isDriverRole && !_clockedIn && lastCheckOutToday == null && _vehiclePhotoInFile == null) ...[
+                  // Step 1 for Driver Sign In: Must click vehicle photo before sign-in button appears
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF0FDF4),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFBBF7D0)),
                     ),
-                    child: _loading
-                        ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF6B3F00)))
-                        : Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(
-                                _clockedIn
-                                    ? 'Check Out'
-                                    : (lastCheckOutToday != null
-                                        ? (isWaitingApproval ? 'Awaiting Approval' : 'Shift Completed')
-                                        : 'Check In'),
-                                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF16A34A).withAlpha(30),
+                                shape: BoxShape.circle,
                               ),
-                              const SizedBox(width: 8),
-                              Icon(
-                                _clockedIn
-                                    ? Icons.access_time_rounded
-                                    : (lastCheckOutToday != null
-                                        ? (isWaitingApproval ? Icons.hourglass_top_rounded : Icons.check_circle_rounded)
-                                        : Icons.access_time_rounded),
-                                size: 20,
+                              child: const Icon(Icons.directions_car_rounded, color: Color(0xFF16A34A), size: 22),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Vehicle Photo Required',
+                                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Click vehicle photo to unlock Check In',
+                                    style: TextStyle(fontSize: 12, color: textSecondary),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: _isCapturingVehiclePhoto ? null : () => _captureVehiclePhoto(isCheckIn: true),
+                            icon: _isCapturingVehiclePhoto
+                                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                : const Icon(Icons.camera_alt_rounded, size: 20),
+                            label: Text(
+                              _isCapturingVehiclePhoto ? 'Opening Camera...' : 'Capture Vehicle Photo',
+                              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF16A34A),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              elevation: 0,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ] else if (_isDriverRole && _clockedIn && _vehiclePhotoOutFile == null) ...[
+                  // Step 1 for Driver Sign Out: Must click vehicle photo before sign-out button appears
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF1E293B) : const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFBFDBFE)),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF2563EB).withAlpha(30),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.directions_car_rounded, color: Color(0xFF2563EB), size: 22),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Vehicle Photo Required',
+                                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Click vehicle photo to unlock Check Out',
+                                    style: TextStyle(fontSize: 12, color: textSecondary),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: _isCapturingVehiclePhoto ? null : () => _captureVehiclePhoto(isCheckIn: false),
+                            icon: _isCapturingVehiclePhoto
+                                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                : const Icon(Icons.camera_alt_rounded, size: 20),
+                            label: Text(
+                              _isCapturingVehiclePhoto ? 'Opening Camera...' : 'Capture Vehicle Photo',
+                              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF2563EB),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              elevation: 0,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ] else ...[
+                  // If driver captured the photo, display the photo preview with a retake option
+                  if (_isDriverRole && !_clockedIn && _vehiclePhotoInFile != null) ...[
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 14),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Row(
+                                children: [
+                                  Icon(Icons.check_circle_rounded, color: Color(0xFF16A34A), size: 18),
+                                  SizedBox(width: 6),
+                                  Text(
+                                    'Vehicle Photo Captured',
+                                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5, color: Color(0xFF16A34A)),
+                                  ),
+                                ],
+                              ),
+                              TextButton.icon(
+                                onPressed: _isCapturingVehiclePhoto ? null : () => _captureVehiclePhoto(isCheckIn: true),
+                                icon: const Icon(Icons.refresh_rounded, size: 16),
+                                label: const Text('Retake', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: amberDark,
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                ),
                               ),
                             ],
                           ),
+                          const SizedBox(height: 8),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Image.file(
+                              _vehiclePhotoInFile!,
+                              width: double.infinity,
+                              height: 150,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ] else if (_isDriverRole && _clockedIn && _vehiclePhotoOutFile != null) ...[
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 14),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0)),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Row(
+                                children: [
+                                  Icon(Icons.check_circle_rounded, color: Color(0xFF2563EB), size: 18),
+                                  SizedBox(width: 6),
+                                  Text(
+                                    'Sign-Out Vehicle Photo Captured',
+                                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5, color: Color(0xFF2563EB)),
+                                  ),
+                                ],
+                              ),
+                              TextButton.icon(
+                                onPressed: _isCapturingVehiclePhoto ? null : () => _captureVehiclePhoto(isCheckIn: false),
+                                icon: const Icon(Icons.refresh_rounded, size: 16),
+                                label: const Text('Retake', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: const Color(0xFF2563EB),
+                                  visualDensity: VisualDensity.compact,
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Image.file(
+                              _vehiclePhotoOutFile!,
+                              width: double.infinity,
+                              height: 150,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  // Standard / Unlocked Check In & Check Out Button
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _loading
+                          ? null
+                          : () {
+                              if (_clockedIn) {
+                                _handleCheckOutPress(isDark, textPrimary, textSecondary, displayCheckIn);
+                              } else if (lastCheckOutToday != null) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      isWaitingApproval
+                                          ? '⏳ Shift completed at $displayCheckOut. Punch is awaiting TL review.'
+                                          : '✅ Shift completed for today (Checked out at $displayCheckOut).',
+                                    ),
+                                    duration: const Duration(seconds: 3),
+                                    backgroundColor: const Color(0xFF1E293B),
+                                  ),
+                                );
+                              } else {
+                                _handleCheckInPress(todayRecords, isDark, textPrimary, textSecondary, amberPrimary);
+                              }
+                            },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _clockedIn
+                            ? amberPrimary
+                            : (lastCheckOutToday != null
+                                ? (isWaitingApproval
+                                    ? (isDark ? const Color(0xFF332014) : const Color(0xFFFEF3C7))
+                                    : (isDark ? const Color(0xFF132A1C) : const Color(0xFFDCFCE7)))
+                                : amberPrimary),
+                        foregroundColor: _clockedIn
+                            ? const Color(0xFF6B3F00)
+                            : (lastCheckOutToday != null
+                                ? (isWaitingApproval
+                                    ? (isDark ? const Color(0xFFFBBF24) : const Color(0xFFB45309))
+                                    : (isDark ? const Color(0xFF4ADE80) : const Color(0xFF166534)))
+                                : const Color(0xFF6B3F00)),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                        elevation: 0,
+                      ),
+                      child: _loading
+                          ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF6B3F00)))
+                          : Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text(
+                                  _clockedIn
+                                      ? 'Check Out'
+                                      : (lastCheckOutToday != null
+                                          ? (isWaitingApproval ? 'Awaiting Approval' : 'Shift Completed')
+                                          : 'Check In'),
+                                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                                ),
+                                const SizedBox(width: 8),
+                                Icon(
+                                  _clockedIn
+                                      ? Icons.access_time_rounded
+                                      : (lastCheckOutToday != null
+                                          ? (isWaitingApproval ? Icons.hourglass_top_rounded : Icons.check_circle_rounded)
+                                          : Icons.access_time_rounded),
+                                  size: 20,
+                                ),
+                              ],
+                            ),
+                    ),
                   ),
-                ),
+                ],
 
                 if (_message != null) ...[
                   const SizedBox(height: 10),
